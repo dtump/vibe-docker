@@ -294,11 +294,6 @@ RUN . /tmp/az.env && . /tmp/azure-devops.env \
  && AZURE_CONFIG_DIR=/tmp/azcfg az devops -h > /dev/null \
  && rm -rf "$whl" /tmp/azcfg /tmp/az.env /tmp/azure-devops.env /tmp/az-requirements.txt
 
-# npm itself, replacing the one NodeSource bundles with nodejs. npm vendors its
-# dependencies (undici, brace-expansion, tar, …), so their CVEs are cleared only
-# by a newer npm release; pinning it in pins/npm.env lets the weekly refresh bump
-# it with the same soak, signature audit and version check as the CLIs below.
-# Its own layer, ahead of theirs, so an npm bump doesn't rerun the apt layer.
 # Mistral Vibe — installed like az above: the PyPI package mistral-vibe and
 # every transitive dep from pins/vibe-requirements.txt (--require-hashes), the
 # lock update_pins.py writes with pins/vibe.env; the build fails if they
@@ -354,6 +349,11 @@ RUN . /tmp/vibe.env \
  && [ "$(env HOME=/tmp/vibehome vibe --version)" = "vibe ${VIBE_VERSION}" ] \
  && rm -rf /tmp/vibehome /tmp/vibe.env /tmp/vibe-requirements.txt
 
+# npm itself, replacing the one NodeSource bundles with nodejs. npm vendors its
+# dependencies (undici, brace-expansion, tar, …), so their CVEs are cleared only
+# by a newer npm release; pinning it in pins/npm.env lets the weekly refresh bump
+# it with the same soak, signature audit and version check as the CLIs below.
+# Its own layer, ahead of theirs, so an npm bump doesn't rerun the apt layer.
 COPY pins/npm.env /tmp/npm.env
 RUN . /tmp/npm.env \
  && npm install -g --ignore-scripts "npm@${NPM_VERSION}" \

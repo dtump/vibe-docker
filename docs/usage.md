@@ -125,7 +125,7 @@ vibe-docker --vibe-dir=~/.vibe-work ~/repo
 VIBE_DOCKER_CONFIG_DIR=~/.vibe-work vibe-docker ~/repo
 ```
 
-The chosen dir takes the place of `~/.vibe` for every item under it in the parity table above (agents, skills, prompts, `AGENTS.md`, `config.docker.toml`). `~/.agents/skills/` is read from your home directory, not from the config dir.
+The chosen dir takes the place of `~/.vibe` for every item under it in the parity table above (agents, skills, prompts, `AGENTS.md`, `config.docker.toml`). `~/.agents/skills/` is read from your home directory, not from the config dir, and only when the chosen dir exists, so a `--vibe-dir` profile that doesn't exist yet doesn't pick up the default profile's skills.
 
 ### Git identity
 
