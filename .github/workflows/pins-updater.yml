@@ -73,8 +73,8 @@ jobs:
           # Dispatch inputs go through env, never string-interpolated into the
           # script body (that would be a template-injection sink). Both are
           # empty on the schedule trigger. An empty SOAK means no --soak, so
-          # each tool keeps its own window (claude-code's is shorter than the
-          # rest) — defaulting it to a number here would override that.
+          # each tool keeps its own default window (update_pins.py owns it)
+          # — defaulting it to a number here would override that.
           SOAK: ${{ inputs.soak }}
           BLOCK_MAJOR: ${{ inputs.block-major-bumps || 'false' }}
         run: |

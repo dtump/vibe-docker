@@ -10,7 +10,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "${HERE}/lib.sh"
 
-MARKER='<!-- managed by claude-docker draft-release -->'
+MARKER='<!-- managed by vibe-docker draft-release -->'
 
 # A two-commit range with a feat at the head, so every case has something to draft.
 COMPARE='{"commits": [
