@@ -97,10 +97,13 @@ RUN ! dpkg -S /usr/bin/pebble >/dev/null 2>&1 && rm -f /usr/bin/pebble
 # gha cache served 1.2.0-3build1. Drop at the next base-image bump.
 # apt and libapt-pkg7.0 are named for CVE-2026-109518, fixed in
 # 3.2.1ubuntu0.1; the base image ships 3.2.0. Drop at the next base-image bump.
+# Every curl download below retries: GitHub's release downloads returned 504
+# intermittently on 2026-11-08 and failed the CI build on the first try, and
+# the pinned sha256 still decides whether what finally arrived is accepted.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg \
  && install -d -m 0755 /etc/apt/keyrings \
- && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
  && chmod go+r /etc/apt/keyrings/nodesource.gpg \
  && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
@@ -129,7 +132,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # GitHub CLI (keyring fetched at build; TODO: commit the keyring to the repo)
 RUN install -d -m 0755 /etc/apt/keyrings \
- && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -149,7 +152,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 # next upstream release the way pinning against Ubuntu's own archive would.
 RUN . /etc/os-release \
  && install -d -m 0755 /etc/apt/keyrings \
- && curl -fsSL https://dl.cloudsmith.io/public/task/task/gpg.046FD1186CA342F0.key \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 https://dl.cloudsmith.io/public/task/task/gpg.046FD1186CA342F0.key \
       | gpg --dearmor -o /etc/apt/keyrings/task-archive-keyring.gpg \
  && chmod go+r /etc/apt/keyrings/task-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/task-archive-keyring.gpg] https://dl.cloudsmith.io/public/task/task/deb/ubuntu ${VERSION_CODENAME} main" \
@@ -170,7 +173,7 @@ RUN . /tmp/glab.env; set -e; ARCH=$(dpkg --print-architecture); \
       arm64) URL="${GLAB_DEB_URL_ARM64}"; SHA="${GLAB_DEB_SHA256_ARM64}" ;; \
       *) echo "Unsupported arch for glab: $ARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "$URL" -o /tmp/glab.deb \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$URL" -o /tmp/glab.deb \
  && echo "${SHA}  /tmp/glab.deb" | sha256sum -c - \
  && apt-get install -y --no-install-recommends /tmp/glab.deb \
  && rm /tmp/glab.deb /tmp/glab.env
@@ -185,7 +188,7 @@ RUN . /tmp/awscli.env; set -e; ARCH=$(uname -m); \
       aarch64) URL="${AWSCLI_URL_AARCH64}"; SHA="${AWSCLI_SHA256_AARCH64}" ;; \
       *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "$URL" -o /tmp/awscli.zip \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$URL" -o /tmp/awscli.zip \
  && echo "${SHA}  /tmp/awscli.zip" | sha256sum -c - \
  && unzip -q /tmp/awscli.zip -d /tmp \
  && /tmp/aws/install \
@@ -204,7 +207,7 @@ RUN . /tmp/uv.env; set -e; ARCH=$(uname -m); \
       aarch64) URL="${UV_URL_AARCH64}"; SHA="${UV_SHA256_AARCH64}" ;; \
       *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "$URL" -o /tmp/uv.tar.gz \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$URL" -o /tmp/uv.tar.gz \
  && echo "${SHA}  /tmp/uv.tar.gz" | sha256sum -c - \
  && mkdir -p /tmp/uv \
  && tar -xzf /tmp/uv.tar.gz -C /tmp/uv \
@@ -244,7 +247,7 @@ RUN ARCH=$(dpkg --print-architecture); \
       arm64) SHA="${GO_SHA256_ARM64}" ;; \
       *) echo "Unsupported arch for go: $ARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz \
  && echo "${SHA}  /tmp/go.tar.gz" | sha256sum -c - \
  && tar -C /usr/local -xzf /tmp/go.tar.gz \
  && rm /tmp/go.tar.gz \
@@ -272,7 +275,7 @@ COPY pins/az.env pins/azure-devops.env pins/az-requirements.txt /tmp/
 RUN . /tmp/az.env && . /tmp/azure-devops.env \
  && grep -q "^azure-cli-core==${AZ_VERSION} " /tmp/az-requirements.txt \
  && whl="/tmp/${AZURE_DEVOPS_URL##*/}" \
- && curl -fsSL "$AZURE_DEVOPS_URL" -o "$whl" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$AZURE_DEVOPS_URL" -o "$whl" \
  && echo "${AZURE_DEVOPS_SHA256}  ${whl}" | sha256sum -c - \
  && UV_PYTHON_INSTALL_DIR=/opt/az/python uv venv --no-cache --managed-python --python 3.13 /opt/az/venv \
  && rm -rf /opt/az/python/cpython-*/bin/pip* /opt/az/python/cpython-*/lib/python3*/site-packages/pip* \
@@ -418,7 +421,7 @@ RUN . /tmp/openspec.env && . /tmp/pnpm.env \
 # vibe/openspec/pnpm pins above).
 COPY pins/tfenv.env /tmp/tfenv.env
 RUN . /tmp/tfenv.env \
- && curl -fsSL "$TFENV_URL" -o /tmp/tfenv.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$TFENV_URL" -o /tmp/tfenv.tar.gz \
  && echo "${TFENV_SHA256}  /tmp/tfenv.tar.gz" | sha256sum -c - \
  && mkdir -p /opt/tfenv \
  && tar -xzf /tmp/tfenv.tar.gz -C /opt/tfenv --strip-components=1 \
