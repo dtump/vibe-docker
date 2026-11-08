@@ -3,12 +3,12 @@
 # Copyright 2026 Schuberg Philis
 #
 # Runtime version check, run from the repo root by ci.yml's `docker-build` job:
-# every pinned CLI in the claude-docker:ci image reports its pinned version.
+# every pinned CLI in the vibe-docker:ci image reports its pinned version.
 # The tool set, each tool's version probe, and the rule for reading a version
 # out of that probe all come from update_pins.py's registry, so a newly pinned
 # tool is covered without editing this file.
 
-IMAGE=claude-docker:ci
+IMAGE=vibe-docker:ci
 
 # Registry rows: name, probe, version_re, pinned, kind, ref (tab-separated).
 list_tools() {

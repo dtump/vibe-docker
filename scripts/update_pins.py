@@ -8,16 +8,18 @@
 """Regenerate the version/sha256 pins under pins/.
 
 For each automated tool this selects the highest STABLE version that is already
-older than its soak window (7 days; 1 day for claude-code), downloads the artifact(s) for BOTH
+older than its soak window (7 days), downloads the artifact(s) for BOTH
 amd64 and arm64, computes the sha256(s), and writes pins/<tool>.env. Selecting a
 version that has already survived the soak window bakes the supply-chain soak
 into the *selection* — the resulting image is safe to use the moment it is built
 (see openspec/changes/automate-version-pins/design.md).
 
 The pins/ fragments are the Dockerfile's source of truth: it COPYs + sources
-them. For az it also writes pins/az-requirements.txt: azure-cli-core and every
-transitive dep, hash-locked with `uv pip compile` (uv is on PATH whenever this
-runs via `uv run`; pins-updater.yml installs it with setup-uv). Nothing here ever edits the Dockerfile. nodejs and the base-image digest
+them. For the two PyPI-backed tools it also writes a hash-locked requirements
+file next to the fragment: pins/az-requirements.txt (azure-cli-core and every
+transitive dep) and pins/vibe-requirements.txt (mistral-vibe and every
+transitive dep), both with `uv pip compile` (uv is on PATH whenever this runs
+via `uv run`; pins-updater.yml installs it with setup-uv). Nothing here ever edits the Dockerfile. nodejs and the base-image digest
 stay manual on purpose and are surfaced as reminders.
 
 Usage:
@@ -57,7 +59,7 @@ from typing import NamedTuple
 REPO_DIR = Path(__file__).resolve().parent.parent
 PINS_DIR = REPO_DIR / "pins"
 DOCKERFILE = REPO_DIR / "Dockerfile"
-USER_AGENT = "update_pins.py (claude-docker)"
+USER_AGENT = "update_pins.py (vibe-docker)"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 # Default soak window in days for a Tool that doesn't set its own. Both --audit
 # and the refresh flow read it (via soak_days_for), so update_pins.py stays the
@@ -113,13 +115,6 @@ TOOLS = [
     # one is only cleared by a newer npm release (see .trivyignore and #51).
     Tool("npm", "npm", "npm",
          "npm --version", r"^([^ ]+)$"),
-    # The ` (Claude Code)` suffix is part of the assertion: a stub launcher that
-    # answered with a bare version would otherwise pass. The 1-day soak is a
-    # maintainer decision: Claude Code ships near-daily and most of its users
-    # take each release within hours, so a bad release surfaces (and is
-    # pulled) inside a day and a 7-day pin just trails the ecosystem.
-    Tool("claude-code", "npm", "@anthropic-ai/claude-code",
-         "claude --version", r"^([^ ]+) \(Claude Code\)$", soak_days=1),
     Tool("openspec", "npm", "@fission-ai/openspec",
          "openspec --version", r"^([^ ]+)$"),
     Tool("pnpm", "npm", "pnpm",
@@ -139,6 +134,16 @@ TOOLS = [
          "az --version", r"^azure-cli +([0-9.]+)"),
     Tool("azure-devops", "azext", "Azure/azure-devops-cli-extension",
          "az --version", r"azure-devops +([0-9.]+)"),
+    # Mistral Vibe: the PyPI package mistral-vibe in its own hash-locked venv
+    # (pins/vibe-requirements.txt, see the Dockerfile). `vibe --version` is
+    # answered by the bundled Rust TUI (vibe/_bin/vibe-rs) that the Python
+    # launcher execs, so a pass also proves the native binary runs. Its output
+    # in the 3.1.0 image, verbatim:
+    #   vibe 3.1.0
+    # The `vibe ` prefix is part of the assertion, so a bare version printed by
+    # something else answering to `vibe` does not pass.
+    Tool("vibe", "pypi", "mistral-vibe",
+         "vibe --version", r"^vibe ([^ ]+)$"),
 ]
 
 
@@ -476,8 +481,6 @@ def fragment_lines(name: str, v: str) -> list[str]:
     fetches and verifies from one committed source of truth (_arch_url_sha_lines)."""
     if name == "npm":
         return [f"NPM_VERSION={v}"]
-    if name == "claude-code":
-        return [f"CLAUDE_CODE_VERSION={v}"]
     if name == "openspec":
         return [f"OPENSPEC_VERSION={v}"]
     if name == "pnpm":
@@ -501,9 +504,12 @@ def fragment_lines(name: str, v: str) -> list[str]:
             "AARCH64": f"{base}/awscli-exe-linux-aarch64-{v}.zip",
         })
     if name == "az":
-        # PyPI-backed, version-only like the npm tools: uv resolves it from PyPI
-        # at build time (see the Dockerfile's az block for what that trusts).
+        # PyPI-backed, version-only like the npm tools: the hashes live in the
+        # lock write_fragment writes next to it (see LOCKS below).
         return [f"AZ_VERSION={v}"]
+    if name == "vibe":
+        # Same shape as az: the version here, every hash in the lock.
+        return [f"VIBE_VERSION={v}"]
     if name == "azure-devops":
         # Pure-Python wheel, arch-independent: one URL + sha. The CDN path is the
         # one `az extension add` itself downloads from (the extension index).
@@ -523,17 +529,28 @@ def write_fragment(stage: Path, name: str, version: str):
         f"(use: scripts/update_pins.py --pin {name}=<version>).\n"
     )
     (stage / f"{name}.env").write_text(header + "\n".join(fragment_lines(name, version)) + "\n")
-    if name == "az":
-        write_az_lock(stage / "az-requirements.txt", version)
+    if name in LOCKS:
+        write_lock(stage, name, version)
 
 
-# The Dockerfile installs az with --require-hashes from this lock, so every
-# transitive dep is pinned too. --universal keeps markers for both arches.
+# PyPI-backed tools the Dockerfile installs with --require-hashes from a lock
+# written next to pins/<name>.env, so every transitive dep is pinned too:
+# name -> (lock file name, top-level requirements for the pinned version).
+# --universal keeps markers for both arches, and --generate-hashes records the
+# hash of every published file of each pinned version, so the one lock installs
+# on amd64 and arm64 alike. The extra az inputs pin deps azure-cli-core leaves
+# loose; mistral-vibe already pins every dependency with ==.
 AZ_LOCK_INPUT = ["python-dateutil", "msrest", "azure-common"]
+LOCKS = {
+    "az": ("az-requirements.txt", lambda v: [f"azure-cli-core=={v}", *AZ_LOCK_INPUT]),
+    "vibe": ("vibe-requirements.txt", lambda v: [f"mistral-vibe=={v}"]),
+}
 
 
-def write_az_lock(out: Path, version: str):
-    reqs = "\n".join([f"azure-cli-core=={version}", *AZ_LOCK_INPUT]) + "\n"
+def write_lock(stage: Path, name: str, version: str):
+    filename, requirements = LOCKS[name]
+    out = stage / filename
+    reqs = "\n".join(requirements(version)) + "\n"
     subprocess.run(
         ["uv", "pip", "compile", "-", "--universal", "--python-version", "3.13",
          "--generate-hashes", "--no-header", "--quiet", "-o", str(out)],
@@ -541,7 +558,7 @@ def write_az_lock(out: Path, version: str):
     )
     body = out.read_text()
     out.write_text(
-        "# Generated by update_pins.py alongside pins/az.env — do not edit by hand.\n"
+        f"# Generated by update_pins.py alongside pins/{name}.env — do not edit by hand.\n"
         + body
     )
 
@@ -831,7 +848,7 @@ def parse_args(argv):
     )
     p.add_argument("--soak", type=int, default=None, metavar="DAYS",
                    help="soak window in days for every tool (default: each tool's own"
-                        f" window — {DEFAULT_SOAK_DAYS}, or 1 for claude-code)")
+                        f" window, {DEFAULT_SOAK_DAYS} for every tool today)")
     p.add_argument("--block-major-bumps", action="store_true",
                    help="stay within each tool's current major version")
     p.add_argument("--pin", action="append", default=[], metavar="TOOL=VERSION",
