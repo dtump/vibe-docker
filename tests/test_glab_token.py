@@ -95,7 +95,7 @@ class GlabTokenDiscovery(unittest.TestCase):
             "PATH": f"{self.bin}:{path}",
             "HOME": str(self.home),
             "STUB_LOG": str(self.log),
-            "CLAUDE_DOCKER_RUNTIME": "docker",
+            "VIBE_DOCKER_RUNTIME": "docker",
             "GITLAB_HOST": "https://gl.example.com",
             **extra,
         }
@@ -249,7 +249,7 @@ class GlabTokenDiscovery(unittest.TestCase):
         self._assert_only_default_tried()
 
     def test_unresolvable_git_pointer_skipped(self):
-        (self.ws / ".git").write_text("gitdir: /nonexistent/claude-docker-test\n")
+        (self.ws / ".git").write_text("gitdir: /nonexistent/vibe-docker-test\n")
         self._assert_only_default_tried()
 
 
@@ -269,7 +269,7 @@ class GlabProxied(unittest.TestCase):
     def test_token_reaches_only_the_sidecar(self):
         argv, token, side = self._proxied()
         self.assertEqual(token, "")  # docker reads no real GITLAB_TOKEN for the agent
-        self.assertIn("GITLAB_TOKEN=claude-docker-proxy", argv)
+        self.assertIn("GITLAB_TOKEN=vibe-docker-proxy", argv)
         self.assertNotIn("GITLAB_TOKEN", argv)
         self.assertEqual((self.log / "sidecar-bearer").read_text(), f"Bearer {SECRET}")
         self.assertEqual((self.log / "sidecar-site").read_text(), "gl.example.com")
@@ -281,7 +281,7 @@ class GlabProxied(unittest.TestCase):
     def test_explicit_token_reaches_only_the_sidecar(self):
         argv, _, _ = self._proxied(GITLAB_TOKEN="glpat-explicit")
         self.assertEqual((self.log / "sidecar-bearer").read_text(), "Bearer glpat-explicit")
-        self.assertIn("GITLAB_TOKEN=claude-docker-proxy", argv)
+        self.assertIn("GITLAB_TOKEN=vibe-docker-proxy", argv)
 
     def test_port_is_kept_for_site_and_dropped_for_add_host(self):
         argv, _, _ = self._proxied(GITLAB_HOST="port.example.com:8443")

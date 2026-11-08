@@ -4,23 +4,26 @@
 #
 # assert-in-container.sh — runs INSIDE the container as the dropped user.
 # Invoked as the container command: entrypoint.sh calls
-#   exec runuser -u claude -- /workspaces/smoke/assert-in-container.sh
-# Reads expectations from env vars set by smoke.sh (via CLAUDE_DOCKER_TEST_ENTRY):
+#   exec runuser -u vibe -- /workspaces/smoke/assert-in-container.sh
+# Reads expectations from env vars set by smoke.sh (via VIBE_DOCKER_TEST_ENTRY):
 #   EXPECT_UID        expected numeric UID (matches HOST_UID forwarded by smoke.sh)
 #   EXPECT_GID        expected primary GID (HOST_GID); checked when EXPECT_UID != 0
 #   EXPECT_EPHEMERAL  1 = --ephemeral run: no volumes, so no AWS tmpfs mask to assert
-#   EXPECT_OPTINS     comma-separated list of granted opt-ins (aws glab tfe api az), or empty
+#   EXPECT_OPTINS     comma-separated list of granted opt-ins (aws glab tfe mistral az), or empty
 #   WORKSPACE         path to the bind-mounted workspace inside the container
 #   EXPECT_RO         1 = workspace is :ro (skip write probe, only test entrypoint startup)
-#   EXPECT_SETTINGS   1 = a settings fixture was mounted at the seed path; assert the
-#                     entrypoint copied it to /root/.claude/settings.json and the copy
-#                     is atomically replaceable. 0 = no seed on fresh volumes; assert
-#                     nothing was seeded. keep = no seed this run, but a previous run
-#                     persisted a settings.json in the warm volume; assert it survived.
-#   EXPECT_SETTINGS_SENTINEL
-#                     sentinel string the settings.json content must carry. Passed by
+#   EXPECT_CONFIG     1 = a config.docker.toml fixture was mounted at the seed path;
+#                     assert the entrypoint copied it to /root/.vibe/config.toml (mode
+#                     600) and the copy is atomically replaceable. 0 = no seed on fresh
+#                     volumes; assert nothing was seeded. keep = no seed this run, but a
+#                     previous run persisted a config.toml in the warm volume; assert it
+#                     survived.
+#   EXPECT_CONFIG_SENTINEL
+#                     sentinel string the config.toml content must carry. Passed by
 #                     smoke.sh rather than hardcoded here: the warm cell changes it
 #                     between passes to prove re-seeding overwrites the previous copy.
+#   EXPECT_VIBE_VERSION
+#                     the pinned vibe version (pins/vibe.env) `vibe --version` must report.
 # Accumulates per-check PASS/FAIL and exits non-zero at the end if any failed
 # (so one regression doesn't hide the rest of the report).
 #
@@ -29,9 +32,9 @@
 PROC_STATUS="${PROC_STATUS:-/proc/self/status}"
 PROC_MOUNTS="${PROC_MOUNTS:-/proc/self/mounts}"
 ROOT_HOME="${ROOT_HOME:-/root}"
-SEED_SETTINGS="${SEED_SETTINGS:-/run/claude-docker/settings.json}"
-API_CA="${API_CA:-/usr/local/share/ca-certificates/claude-docker-api.crt}"
-AUTH_PROXY_CA="${AUTH_PROXY_CA:-/usr/local/share/ca-certificates/claude-docker-auth-proxy.crt}"
+SEED_CONFIG="${SEED_CONFIG:-/run/vibe-docker/config.toml}"
+AZ_CA="${AZ_CA:-/usr/local/share/ca-certificates/vibe-docker-az.crt}"
+AUTH_PROXY_CA="${AUTH_PROXY_CA:-/usr/local/share/ca-certificates/vibe-docker-auth-proxy.crt}"
 CA_BUNDLE="${CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
 
 PASS_COUNT=0
@@ -117,7 +120,7 @@ check_identity() {
     fail "single-group: expected exactly 1 GID, got $gid_count ('$actual_gids')"
   fi
 
-  # And it must be the EXPECTED primary GID — a regression assigning claude to
+  # And it must be the EXPECTED primary GID — a regression assigning vibe to
   # gid 0 (root) as its single group would pass the count check above. Skip for
   # the root-legacy cell, where the process keeps gid 0 (not HOST_GID).
   if [ "${EXPECT_UID:-0}" != "0" ]; then
@@ -240,8 +243,8 @@ assert_path_before() {
 
 check_path_order() {
   # The image PATH survives the privilege drop — entrypoint.sh execs
-  # `runuser -u claude` (not -l), so what this script sees IS the shipped
-  # ordering. /root is the persistent claude-code-root volume, so both
+  # `runuser -u vibe` (not -l), so what this script sees IS the shipped
+  # ordering. /root is the persistent vibe-root volume, so both
   # /root/.local/bin (pip --user / uv tool install prefix) and /root/go/bin
   # (GOPATH default, `go install` target) are agent-writable and survive the
   # session. Neither may precede a system path: a binary one session leaves
@@ -305,7 +308,7 @@ check_git_trust() {
     pass "git-trust-workspace: skipped (EXPECT_RO=1, workspace is :ro)"
     return 0
   fi
-  # Nested two levels, like a .claude/worktrees/<name> checkout.
+  # Nested two levels, like a <repo>/.worktrees/<name> checkout.
   if repo=$(mktemp -d "$ws/.git-trust.XXXXXX") && git init -q "$repo/nested/repo"; then
     assert_eq "git-trust: foreign-owned repo under a trusted workspace opens" \
       "$(git_opens "$repo/nested/repo")" "ok"
@@ -416,7 +419,7 @@ check_credentials() {
       # --glab keeps the token in the auth-proxy sidecar: the agent sees only
       # the placeholder, and the session CA it reaches GitLab through is trusted.
       if [ "$optin" = "glab" ]; then
-        if [ "${GITLAB_TOKEN:-}" = "claude-docker-proxy" ]; then
+        if [ "${GITLAB_TOKEN:-}" = "vibe-docker-proxy" ]; then
           pass "optin-glab-proxy: GITLAB_TOKEN is the auth-proxy placeholder"
         else
           fail "optin-glab-proxy: GITLAB_TOKEN is not the placeholder (real token forwarded?)"
@@ -531,40 +534,51 @@ check_aws_state_masking() {
   fi
 }
 
-# --api has no config path, so it can't ride check_credentials' shape. What
-# matters: Claude Code is pointed at the auth-proxy sidecar with a placeholder
-# credential (the real one stays in the sidecar), and the mounted private CA
-# made it into the system bundle (the entrypoint's update-ca-certificates step).
-check_api() {
-  local ca="$API_CA" bundle="$CA_BUNDLE" ca_line=""
+# --mistral has no config path, so it can't ride check_credentials' shape.
+# smoke.sh exports MISTRAL_API_KEY for every cell, so its absence without the
+# flag proves run.sh forwards it only under --mistral; with the flag, the value
+# must be smoke's own sentinel.
+check_mistral() {
   case ",${EXPECT_OPTINS:-}," in
-    *,api,*)
-      if [ "${ANTHROPIC_BASE_URL:-}" = "http://claude-docker-api-proxy:8080" ]; then
-        pass "optin-api-env: ANTHROPIC_BASE_URL points at the auth-proxy sidecar"
+    *,mistral,*)
+      case "${MISTRAL_API_KEY:-}" in
+        *SMOKE-SENTINEL-MISTRAL*) pass "optin-mistral-env: MISTRAL_API_KEY carries the smoke sentinel" ;;
+        *) fail "optin-mistral-env: MISTRAL_API_KEY missing or not the smoke fixture" ;;
+      esac
+      ;;
+    *)
+      if [ -n "${MISTRAL_API_KEY:-}" ]; then
+        fail "leak-mistral: MISTRAL_API_KEY is set but opt-in 'mistral' was not granted"
       else
-        fail "optin-api-env: ANTHROPIC_BASE_URL is '${ANTHROPIC_BASE_URL:-<unset>}', not the sidecar"
+        pass "leak-mistral: MISTRAL_API_KEY not forwarded (opt-in off)"
       fi
-      if [ "${ANTHROPIC_AUTH_TOKEN:-}" = "claude-docker-proxy" ]; then
-        pass "optin-api-proxy: ANTHROPIC_AUTH_TOKEN is the auth-proxy placeholder"
-      else
-        fail "optin-api-proxy: ANTHROPIC_AUTH_TOKEN is not the placeholder (real token forwarded?)"
-      fi
+      ;;
+  esac
+}
+
+# --az with VIBE_DOCKER_AZ_CA: the mounted private CA must have made it into
+# the system bundle (the entrypoint's update-ca-certificates step), which is
+# where vibe (VIBE_ENABLE_SYSTEM_TRUST_STORE=true), git and az read it.
+check_az_ca() {
+  local ca="$AZ_CA" bundle="$CA_BUNDLE" ca_line=""
+  case ",${EXPECT_OPTINS:-}," in
+    *,az,*)
       # Line 2 is the first base64 line of the PEM body — unique to this CA.
       # It must be non-empty: grep -F "" matches any bundle.
       if [ -f "$ca" ]; then
         ca_line=$(sed -n 2p "$ca")
       fi
       if [ -n "$ca_line" ] && grep -qF -- "$ca_line" "$bundle" 2>/dev/null; then
-        pass "optin-api-ca: mounted CA is in the system trust bundle"
+        pass "optin-az-ca: mounted CA is in the system trust bundle"
       else
-        fail "optin-api-ca: mounted CA missing from $bundle (update-ca-certificates not run?)"
+        fail "optin-az-ca: mounted CA missing from $bundle (update-ca-certificates not run?)"
       fi
       ;;
     *)
-      if [ -n "${ANTHROPIC_BASE_URL:-}" ] || [ -e "$ca" ]; then
-        fail "leak-api: endpoint env or CA present but opt-in 'api' was not granted"
+      if [ -e "$ca" ]; then
+        fail "leak-az-ca: $ca present but opt-in 'az' was not granted"
       else
-        pass "leak-api: no endpoint env or CA (opt-in off)"
+        pass "leak-az-ca: no --az CA mounted (opt-in off)"
       fi
       ;;
   esac
@@ -598,242 +612,123 @@ check_mask_set() {
 }
 
 # ---------------------------------------------------------------------------
-# 6. Seeded settings — must be a writable copy, not a mount
+# 6. Host config parity, and the seeded config.toml
 # ---------------------------------------------------------------------------
 
-check_settings() {
-  local settings="${ROOT_HOME}/.claude/settings.json"
-  local mode="${EXPECT_SETTINGS:-0}"
+# smoke.sh puts every parity item, each carrying SMOKE-SENTINEL-PARITY, in the
+# fake home: agents/, skills/, prompts/ and AGENTS.md under ~/.vibe, and
+# skills/ under ~/.agents. Each must arrive as a read-only copy. The host's
+# hooks.toml and its own config.toml sit beside them and must not.
+check_host_config() {
+  local item path
+  for item in .vibe/agents .vibe/skills .vibe/prompts .vibe/AGENTS.md .agents/skills; do
+    path="${ROOT_HOME}/${item}"
+    if grep -rqF SMOKE-SENTINEL-PARITY "$path" 2>/dev/null; then
+      pass "parity-${item}: $path carries the host fixture"
+    else
+      fail "parity-${item}: $path missing or not the host fixture"
+    fi
+    assert_write_fails_ro "parity-${item}-ro" "$path"
+  done
+  if [ -e "${ROOT_HOME}/.vibe/hooks.toml" ]; then
+    fail "parity-hooks: host hooks.toml reached the container"
+  else
+    pass "parity-hooks: host hooks.toml not forwarded"
+  fi
+  if grep -qF SMOKE-SENTINEL-HOST-CONFIG "${ROOT_HOME}/.vibe/config.toml" 2>/dev/null; then
+    fail "parity-host-config: the host's own config.toml reached the container"
+  else
+    pass "parity-host-config: the host's own config.toml not forwarded"
+  fi
+}
+
+check_config() {
+  local config="${ROOT_HOME}/.vibe/config.toml"
+  local mode="${EXPECT_CONFIG:-0}" perms
 
   if [ "$mode" = "0" ]; then
     # No seed mounted, fresh volumes: the entrypoint must start cleanly
     # without creating one. (The warm no-seed path — a previously persisted
-    # settings.json left as-is — is mode=keep below.)
-    if [ -e "$settings" ]; then
-      fail "settings-absent: $settings exists but no seed was mounted"
+    # config.toml left as-is — is mode=keep below.)
+    if [ -e "$config" ]; then
+      fail "config-absent: $config exists but no seed was mounted"
     else
-      pass "settings-absent: no settings file without a seed"
+      pass "config-absent: no config.toml without a seed"
     fi
     return
   fi
 
   if [ "$mode" = "keep" ]; then
-    # Warm volume, no seed this run: the entrypoint's seed block must not
-    # touch the settings.json a previous run persisted. The shared checks
+    # Warm volume, no seed this run: the entrypoint's seed step must not
+    # touch the config.toml a previous run persisted. The shared checks
     # below assert it survived with the previous pass's sentinel and is
     # still atomically replaceable.
-    if [ -e "$SEED_SETTINGS" ]; then
-      fail "settings-keep: seed present at $SEED_SETTINGS but this pass expects none"
+    if [ -e "$SEED_CONFIG" ]; then
+      fail "config-keep: seed present at $SEED_CONFIG but this pass expects none"
     else
-      pass "settings-keep: no seed mounted this run"
+      pass "config-keep: no seed mounted this run"
     fi
   fi
 
-  if [ ! -f "$settings" ]; then
-    fail "settings-present: $settings missing (mode=$mode: seed copy did not run, or a persisted file was lost)"
+  if [ ! -f "$config" ] || [ -L "$config" ]; then
+    fail "config-present: $config missing or not a regular file (mode=$mode: seed copy did not run, or a persisted file was lost)"
     return
   fi
-  pass "settings-present: $settings exists"
+  pass "config-present: $config is a regular file"
+
+  if [ "$mode" = "1" ]; then
+    perms=$(stat -c '%a' "$config" 2>/dev/null) || perms=""
+    assert_eq "config-mode: seeded config.toml is 600" "$perms" "600"
+  fi
 
   # Content must carry the sentinel smoke.sh expects for THIS pass. The warm
   # cell reruns with a rewritten fixture, so matching the pass-specific
   # sentinel proves the entrypoint re-seeded (mode=1) or left the persisted
-  # copy alone (mode=keep) — not merely that some settings.json exists.
-  local sentinel="${EXPECT_SETTINGS_SENTINEL:-}"
+  # copy alone (mode=keep) — not merely that some config.toml exists.
+  local sentinel="${EXPECT_CONFIG_SENTINEL:-}"
   if [ -z "$sentinel" ]; then
-    fail "settings-content: EXPECT_SETTINGS_SENTINEL not set (smoke.sh plumbing regression)"
-  elif grep -qF -- "$sentinel" "$settings" 2>/dev/null; then
-    pass "settings-content: settings.json carries expected sentinel '$sentinel'"
+    fail "config-content: EXPECT_CONFIG_SENTINEL not set (smoke.sh plumbing regression)"
+  elif grep -qF -- "$sentinel" "$config" 2>/dev/null; then
+    pass "config-content: config.toml carries expected sentinel '$sentinel'"
   else
-    # Size only: settings.json may hold tokens, and this lands in the CI log.
-    fail "settings-content: '$sentinel' not found in $settings ($(wc -c 2>/dev/null < "$settings" || echo '<unreadable>') bytes)"
+    # Size only: config.toml may hold secrets, and this lands in the CI log.
+    fail "config-content: '$sentinel' not found in $config ($(wc -c 2>/dev/null < "$config" || echo '<unreadable>') bytes)"
   fi
 
-  # The reason settings are copied instead of bind-mounted: Claude Code saves
-  # settings by renaming a tmp file over settings.json, and rename() over a
+  # The reason config.toml is copied instead of bind-mounted: vibe saves
+  # settings by renaming a temporary file over config.toml, and rename() over a
   # mountpoint fails with EBUSY. Prove the rename path works.
-  local tmp="${settings}.tmp.smoke"
-  if cp "$settings" "$tmp" 2>/dev/null && mv "$tmp" "$settings" 2>/dev/null; then
-    pass "settings-rename: tmp-file rename over settings.json succeeds"
+  local tmp="${config}.tmp.smoke"
+  if cp "$config" "$tmp" 2>/dev/null && mv "$tmp" "$config" 2>/dev/null; then
+    pass "config-rename: tmp-file rename over config.toml succeeds"
   else
     rm -f "$tmp"
-    fail "settings-rename: cannot atomically replace $settings (mountpoint or ownership regression)"
+    fail "config-rename: cannot atomically replace $config (mountpoint or ownership regression)"
   fi
 }
 
 # ---------------------------------------------------------------------------
-# 7. Robustness — entrypoint reached here, so it did not abort
+# 7. vibe itself — runs as the dropped user, with the image's settings
+# ---------------------------------------------------------------------------
+
+# The image pins vibe's update and trust-store behaviour through VIBE_*
+# variables, which vibe reads after config.toml: they must survive the drop.
+check_vibe() {
+  assert_eq "vibe-env: VIBE_ENABLE_UPDATE_CHECKS" "${VIBE_ENABLE_UPDATE_CHECKS:-}" "false"
+  assert_eq "vibe-env: VIBE_ENABLE_AUTO_UPDATE" "${VIBE_ENABLE_AUTO_UPDATE:-}" "false"
+  assert_eq "vibe-env: VIBE_ENABLE_SYSTEM_TRUST_STORE" "${VIBE_ENABLE_SYSTEM_TRUST_STORE:-}" "true"
+  local out
+  out=$(vibe --version 2>&1) || out="exit $?: $out"
+  assert_eq "vibe-version: vibe --version as $(id -u)" "$out" "vibe ${EXPECT_VIBE_VERSION:-<unset>}"
+}
+
+# ---------------------------------------------------------------------------
+# 8. Robustness — entrypoint reached here, so it did not abort
 # ---------------------------------------------------------------------------
 
 check_entrypoint_reached() {
   # If we are executing at all, the entrypoint ran to completion and exec'd us.
   pass "entrypoint-reached: this script is running, entrypoint did not abort"
-}
-
-# ---------------------------------------------------------------------------
-# 8. --egress-lock (EXPECT_EGRESS=1, driven by smoke/egress.sh via run.sh)
-# ---------------------------------------------------------------------------
-# The proxy-unaware probes are the load-bearing ones. A proxy-aware client
-# failing to reach a blocked host only proves the proxy is configured. It says
-# nothing about whether a raw socket can walk around it, and the --internal
-# network exists to stop exactly that. smoke/egress.sh's fake gateway is
-# example.com; any other non-provider host (example.org) must stay reachable.
-
-# HTTP status for $2 via curl; $1 is the -w variable. Prints 000 on failure.
-egress_code() {
-  local out
-  out=$(curl -s -o /dev/null -m 20 -w "%{$1}" "${@:3}" "$2" 2>/dev/null) || true
-  printf '%s' "${out:-000}"
-}
-
-# entrypoint.sh approved the ANTHROPIC_API_KEY the agent sees (under --api,
-# the sidecar's placeholder), so a fresh ~/.claude.json doesn't send onboarding
-# to api.anthropic.com for a connectivity check. Claude Code stores the key's
-# last 20 characters, or all of a shorter one: the placeholder
-# `claude-docker-proxy` is 19, and bash's ${var: -20} would be empty for it.
-check_egress_api_key() {
-  local key_id="${ANTHROPIC_API_KEY:-}"
-  [ "${#key_id}" -gt 20 ] && key_id="${key_id: -20}"
-  if [ -n "${ANTHROPIC_API_KEY:-}" ] \
-     && jq -e --arg id "$key_id" '.customApiKeyResponses.approved | index([$id])' \
-          "$ROOT_HOME/.claude.json" >/dev/null 2>&1; then
-    pass "egress-api-key: ANTHROPIC_API_KEY approved in ~/.claude.json"
-  else
-    fail "egress-api-key: ANTHROPIC_API_KEY not approved in ~/.claude.json"
-  fi
-}
-
-check_egress() {
-  if [ -n "${https_proxy:-}" ] && [ "${https_proxy:-}" = "${HTTPS_PROXY:-}" ]; then
-    pass "egress-env: https_proxy/HTTPS_PROXY set ($https_proxy)"
-  else
-    fail "egress-env: https_proxy/HTTPS_PROXY missing or inconsistent"
-  fi
-
-  if [ -n "${EXPECT_EGRESS_ENDPOINT_PORT:-}" ]; then
-    # The endpoint is github.com on an SSH port (tests/smoke/egress.sh --endpoint-port):
-    # squid tunnels to it (http_connect 200; the TLS handshake with sshd then
-    # fails, which doesn't matter), while the same port on any other host stays
-    # refused. Both are squid's decision, so 403 means a rule refused it.
-    local ep_port="$EXPECT_EGRESS_ENDPOINT_PORT"
-    assert_eq "egress-endpoint-port: CONNECT to the endpoint's own port (github.com:$ep_port) allowed" \
-      "$(egress_code http_connect "https://github.com:$ep_port/")" "200"
-    assert_eq "egress-endpoint-port: the same port on another host (example.org:$ep_port) refused" \
-      "$(egress_code http_connect "https://example.org:$ep_port/")" "403"
-  else
-    assert_eq "egress-endpoint: the model endpoint (example.com) via proxy" \
-      "$(egress_code http_code https://example.com/)" "200"
-  fi
-  if [ "${EXPECT_EGRESS_API_PROXY:-0}" = "1" ]; then
-    # --api: squid passes the plain-HTTP hop to the auth-proxy sidecar on its
-    # port 8080. Whatever the upstream answers, a 403 is squid refusing it and
-    # 000 a broken chain.
-    local api_code
-    api_code=$(egress_code http_code http://claude-docker-api-proxy:8080/)
-    case "$api_code" in
-      403|000) fail "egress-api-proxy: the --api auth-proxy sidecar via proxy (HTTP $api_code)" ;;
-      *) pass "egress-api-proxy: the --api auth-proxy sidecar via proxy (HTTP $api_code)" ;;
-    esac
-  fi
-  assert_eq "egress-open: a non-model host (example.org) via proxy" \
-    "$(egress_code http_code https://example.org/)" "200"
-  assert_eq "egress-provider: CONNECT api.anthropic.com refused by proxy" \
-    "$(egress_code http_connect https://api.anthropic.com/)" "403"
-  assert_eq "egress-provider: CONNECT claude.ai refused by proxy" \
-    "$(egress_code http_connect https://claude.ai/)" "403"
-  # Claude Code's managed settings pin the endpoint over any project setting
-  # (tests/integration/managed-settings-precedence.sh proves the precedence). Here: they
-  # are present, name this session's endpoint and squid (the container's own
-  # proxy env), switch the other backends off, and the agent can neither
-  # change them nor add a file beside them.
-  local ms=/etc/claude-code/managed-settings.json ms_json px="${https_proxy:-}"
-  ms_json=$(jq -c '.env' "$ms" 2>/dev/null) || ms_json=""
-  assert_eq "egress-managed: managed settings pin the endpoint and proxy env, other backends off" "$ms_json" \
-    "{\"ANTHROPIC_BASE_URL\":\"${EXPECT_EGRESS_MANAGED_URL:-}\",\"http_proxy\":\"$px\",\"https_proxy\":\"$px\",\"HTTP_PROXY\":\"$px\",\"HTTPS_PROXY\":\"$px\",\"no_proxy\":\"localhost,127.0.0.1,::1\",\"NO_PROXY\":\"localhost,127.0.0.1,::1\",\"CLAUDE_CODE_USE_GATEWAY\":\"0\",\"CLAUDE_CODE_USE_BEDROCK\":\"0\",\"CLAUDE_CODE_USE_FOUNDRY\":\"0\",\"CLAUDE_CODE_USE_ANTHROPIC_AWS\":\"0\",\"CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD\":\"0\",\"CLAUDE_CODE_USE_MANTLE\":\"0\",\"CLAUDE_CODE_USE_VERTEX\":\"0\"}"
-  if ( : >>"$ms" ) 2>/dev/null; then
-    fail "egress-managed-ro: the agent can write $ms"
-  else
-    pass "egress-managed-ro: $ms is read-only to the agent"
-  fi
-  if ( : >/etc/claude-code/extra.json ) 2>/dev/null; then
-    fail "egress-managed-dir: the agent can add files to /etc/claude-code"
-  else
-    pass "egress-managed-dir: /etc/claude-code is not writable by the agent"
-  fi
-
-  check_egress_api_key
-
-  if [ "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-}" = "1" ]; then
-    pass "egress-telemetry: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
-  else
-    fail "egress-telemetry: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC not set"
-  fi
-  if [ "${CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL:-}" = "1" ]; then
-    pass "egress-marketplace: CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1"
-  else
-    fail "egress-marketplace: CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL not set"
-  fi
-
-  # No route: a public IP, without the proxy.
-  if curl -s -o /dev/null -m 10 --noproxy '*' http://1.1.1.1/ 2>/dev/null; then
-    fail "egress-bypass: proxy-unaware curl reached 1.1.1.1 by IP"
-  else
-    pass "egress-bypass: proxy-unaware curl to a public IP fails"
-  fi
-  if getent hosts example.org >/dev/null 2>&1; then
-    fail "egress-dns: example.org resolves inside the agent container (DNS side channel)"
-  else
-    pass "egress-dns: external names do not resolve inside the agent container"
-  fi
-
-  # Denies above the allows. no_proxy is cleared for the localhost probe so
-  # curl sends it to the proxy (where 'localhost' resolves to the proxy's own
-  # loopback) instead of dialling the agent's own loopback.
-  assert_eq "egress-metadata: 169.254.169.254 refused by proxy" \
-    "$(egress_code http_code http://169.254.169.254/latest/meta-data/)" "403"
-  assert_eq "egress-loopback: a name resolving to the proxy's loopback refused" \
-    "$(no_proxy='' NO_PROXY='' egress_code http_code http://localhost/)" "403"
-  assert_eq "egress-port: CONNECT to a non-443 port refused" \
-    "$(egress_code http_connect https://example.com:8443/)" "403"
-
-  if [ "${EXPECT_EGRESS_ALLOWLIST:-0}" = "1" ]; then
-    # tests/smoke/egress.sh --allowlist lists example.org and .github.com:
-    # every other host is refused, including --tfe's, which the flag doesn't add.
-    assert_eq "egress-allowlist: CONNECT to an unlisted host (example.net) refused" \
-      "$(egress_code http_connect https://example.net/)" "403"
-    assert_eq "egress-allowlist: plain HTTP to an unlisted host (example.net) refused" \
-      "$(egress_code http_code http://example.net/)" "403"
-    assert_eq "egress-allowlist: --tfe's host (app.terraform.io) refused when not listed" \
-      "$(egress_code http_connect https://app.terraform.io/)" "403"
-    assert_eq "egress-allowlist: a listed .suffix (codeload.github.com) allowed" \
-      "$(egress_code http_connect https://codeload.github.com/)" "200"
-  fi
-  if [ "${EXPECT_EGRESS_GH_CLONE:-0}" = "1" ]; then
-    if git clone -q --depth 1 https://github.com/schubergphilis/claude-docker /tmp/egress-clone >/dev/null 2>&1; then
-      pass "egress-allowlist-clone: git clone through the gh sidecar with .github.com listed"
-    else
-      fail "egress-allowlist-clone: git clone through the gh sidecar failed"
-    fi
-  fi
-  if [ "${EXPECT_EGRESS_GH:-0}" = "1" ]; then
-    # --cacert replaces the default bundle, so a completed handshake proves the
-    # auth-proxy sidecar terminated TLS (squid routed api.github.com to it). /user needs
-    # a token and this probe sends none, so GitHub's 401 message tells the two
-    # apart: "Bad credentials" means the sidecar injected smoke's fake token,
-    # "Requires authentication" means it did not. A 502 would be the sidecar
-    # failing upstream, 000 the chain broken.
-    local gh_out gh_code gh_body
-    gh_out=$(curl -s -m 20 -w '\n%{http_code}' \
-      --cacert /usr/local/share/ca-certificates/claude-docker-auth-proxy.crt \
-      https://api.github.com/user 2>/dev/null) || true
-    gh_code=${gh_out##*$'\n'}
-    gh_body=${gh_out%$'\n'*}
-    if [ "$gh_code" = "401" ] && [[ "$gh_body" == *'"Bad credentials"'* ]]; then
-      pass "egress-gh: api.github.com via proxy → auth-proxy sidecar → GitHub, token injected (401 Bad credentials)"
-    else
-      fail "egress-gh: api.github.com via proxy → auth-proxy sidecar did not inject the token (HTTP ${gh_code:-000}: $(printf '%s' "$gh_body" | tr -d '\n' | cut -c1-120))"
-    fi
-  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -845,23 +740,6 @@ main() {
 
   echo "=== assert-in-container starting (UID=$(id -u) GID=$(id -g)) ==="
 
-  if [ "${EXPECT_EGRESS:-0}" = "1" ]; then
-    # run.sh-driven cell: only the checks that hold for a run.sh session. The
-    # capability check stays in: the egress boundary must not cost a capability.
-    check_entrypoint_reached
-    check_identity
-    check_security
-    check_egress
-    echo "==="
-    echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
-    if [ "$FAIL_COUNT" -gt 0 ]; then
-      echo "RESULT: FAIL"
-      exit 1
-    fi
-    echo "RESULT: PASS"
-    return 0
-  fi
-
   check_entrypoint_reached
   check_identity
   check_security
@@ -870,9 +748,12 @@ main() {
   check_workspace_write
   check_credentials
   check_aws_state_masking
-  check_api
+  check_mistral
+  check_az_ca
   check_mask_set
-  check_settings
+  check_host_config
+  check_config
+  check_vibe
 
   echo "==="
   echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

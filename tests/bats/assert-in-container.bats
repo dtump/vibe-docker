@@ -8,13 +8,14 @@ setup() {
   ROOT_HOME="${BATS_TEST_TMPDIR}/root"
   PROC_STATUS="${BATS_TEST_TMPDIR}/status"
   PROC_MOUNTS="${BATS_TEST_TMPDIR}/mounts"
-  API_CA="${BATS_TEST_TMPDIR}/api.crt"
+  AZ_CA="${BATS_TEST_TMPDIR}/az.crt"
   AUTH_PROXY_CA="${BATS_TEST_TMPDIR}/auth-proxy.crt"
   CA_BUNDLE="${BATS_TEST_TMPDIR}/bundle.crt"
-  SEED_SETTINGS="${BATS_TEST_TMPDIR}/seed.json"
+  SEED_CONFIG="${BATS_TEST_TMPDIR}/seed.toml"
   mkdir -p "$ROOT_HOME"
   unset EXPECT_OPTINS EXPECT_EPHEMERAL AWS_PROFILE GITLAB_TOKEN TF_TOKEN_app_terraform_io \
-    AZURE_DEVOPS_EXT_PAT ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY EXPECT_SETTINGS EXPECT_SETTINGS_SENTINEL
+    AZURE_DEVOPS_EXT_PAT MISTRAL_API_KEY EXPECT_CONFIG EXPECT_CONFIG_SENTINEL EXPECT_VIBE_VERSION \
+    VIBE_ENABLE_UPDATE_CHECKS VIBE_ENABLE_AUTO_UPDATE VIBE_ENABLE_SYSTEM_TRUST_STORE
   # A writable fixture can't produce EROFS; that check needs a real :ro mount.
   assert_write_fails_ro() { pass "$1: stubbed"; }
 }
@@ -106,7 +107,7 @@ setup() {
   mkdir -p "${ROOT_HOME}/.config/glab-cli"
   echo SMOKE-SENTINEL > "${ROOT_HOME}/.config/glab-cli/config.yml"
   : > "$AUTH_PROXY_CA"
-  EXPECT_OPTINS=glab,az GITLAB_TOKEN=claude-docker-proxy AZURE_DEVOPS_EXT_PAT=SMOKE-SENTINEL-pat \
+  EXPECT_OPTINS=glab,az GITLAB_TOKEN=vibe-docker-proxy AZURE_DEVOPS_EXT_PAT=SMOKE-SENTINEL-pat \
     run check_credentials
   [[ "$output" != *FAIL* ]]
   [[ "$output" == *"PASS: optin-glab-content"* ]]
@@ -244,7 +245,7 @@ write_mounts() {
   : > "$PROC_MOUNTS"
   local m
   for m in "$@"; do echo "tmpfs $m tmpfs rw 0 0" >> "$PROC_MOUNTS"; done
-  echo "/dev/vda1 /root/.claude ext4 rw 0 0" >> "$PROC_MOUNTS"
+  echo "/dev/vda1 /root/.vibe ext4 rw 0 0" >> "$PROC_MOUNTS"
 }
 
 @test "check_mask_set: no opt-ins expects every mask" {
@@ -331,121 +332,198 @@ write_mounts() {
   [[ "$output" == *"FAIL: aws-cache-masked-scope:"* ]]
 }
 
-# --- check_api ---------------------------------------------------------------
+# --- check_mistral -----------------------------------------------------------
 
-@test "check_api: CA present in the bundle passes" {
-  printf '%s\n' "-----BEGIN CERTIFICATE-----" "MIIUNIQUE" > "$API_CA"
+@test "check_mistral: granted, the smoke key passes" {
+  EXPECT_OPTINS=aws,mistral MISTRAL_API_KEY=SMOKE-SENTINEL-MISTRAL run check_mistral
+  [ "$output" = "PASS: optin-mistral-env: MISTRAL_API_KEY carries the smoke sentinel" ]
+}
+
+@test "check_mistral: granted, a missing or foreign key fails" {
+  EXPECT_OPTINS=mistral run check_mistral
+  [[ "$output" == "FAIL: optin-mistral-env:"* ]]
+  EXPECT_OPTINS=mistral MISTRAL_API_KEY=other run check_mistral
+  [[ "$output" == "FAIL: optin-mistral-env:"* ]]
+}
+
+@test "check_mistral: not granted, no key passes" {
+  EXPECT_OPTINS=aws run check_mistral
+  [ "$output" = "PASS: leak-mistral: MISTRAL_API_KEY not forwarded (opt-in off)" ]
+}
+
+@test "check_mistral: not granted, a forwarded key fails" {
+  MISTRAL_API_KEY=SMOKE-SENTINEL-MISTRAL run check_mistral
+  [[ "$output" == "FAIL: leak-mistral: MISTRAL_API_KEY is set"* ]]
+}
+
+# --- check_az_ca -------------------------------------------------------------
+
+@test "check_az_ca: CA present in the bundle passes" {
+  printf '%s\n' "-----BEGIN CERTIFICATE-----" "MIIUNIQUE" > "$AZ_CA"
   printf '%s\n' other MIIUNIQUE > "$CA_BUNDLE"
-  EXPECT_OPTINS=api ANTHROPIC_BASE_URL=https://x run check_api
-  [[ "$output" == *"PASS: optin-api-ca"* ]]
+  EXPECT_OPTINS=az run check_az_ca
+  [[ "$output" == *"PASS: optin-az-ca"* ]]
 }
 
-@test "check_api: empty CA line 2 does not match any bundle" {
-  printf '%s\n' "-----BEGIN CERTIFICATE-----" "" > "$API_CA"
+@test "check_az_ca: empty CA line 2 does not match any bundle" {
+  printf '%s\n' "-----BEGIN CERTIFICATE-----" "" > "$AZ_CA"
   echo anything > "$CA_BUNDLE"
-  EXPECT_OPTINS=api ANTHROPIC_BASE_URL=https://x run check_api
-  [[ "$output" == *"FAIL: optin-api-ca"* ]]
+  EXPECT_OPTINS=az run check_az_ca
+  [[ "$output" == *"FAIL: optin-az-ca"* ]]
 }
 
-@test "check_api: CA line starting with a dash is matched literally" {
-  printf '%s\n' "-----BEGIN CERTIFICATE-----" "-v" > "$API_CA"
+@test "check_az_ca: CA line starting with a dash is matched literally" {
+  printf '%s\n' "-----BEGIN CERTIFICATE-----" "-v" > "$AZ_CA"
   echo "-v" > "$CA_BUNDLE"
-  EXPECT_OPTINS=api ANTHROPIC_BASE_URL=https://x run check_api
-  [[ "$output" == *"PASS: optin-api-ca"* ]]
+  EXPECT_OPTINS=az run check_az_ca
+  [[ "$output" == *"PASS: optin-az-ca"* ]]
 }
 
-@test "check_api: sidecar base URL and placeholder token pass" {
-  EXPECT_OPTINS=api ANTHROPIC_BASE_URL=http://claude-docker-api-proxy:8080 \
-    ANTHROPIC_AUTH_TOKEN=claude-docker-proxy run check_api
-  [[ "$output" == *"PASS: optin-api-env"* ]]
-  [[ "$output" == *"PASS: optin-api-proxy"* ]]
+@test "check_az_ca: a CA without --az fails" {
+  : > "$AZ_CA"
+  run check_az_ca
+  [[ "$output" == "FAIL: leak-az-ca:"* ]]
+  rm "$AZ_CA"
+  run check_az_ca
+  [[ "$output" == "PASS: leak-az-ca:"* ]]
 }
 
-@test "check_api: the real base URL and token fail" {
-  EXPECT_OPTINS=api ANTHROPIC_BASE_URL=https://gw.example.com ANTHROPIC_AUTH_TOKEN=sk-real run check_api
-  [[ "$output" == *"FAIL: optin-api-env: ANTHROPIC_BASE_URL is 'https://gw.example.com', not the sidecar"* ]]
-  [[ "$output" == *"FAIL: optin-api-proxy"* ]]
+# --- check_host_config -------------------------------------------------------
+
+parity_fixture() {
+  mkdir -p "$ROOT_HOME/.vibe/agents" "$ROOT_HOME/.vibe/skills/s" "$ROOT_HOME/.vibe/prompts" \
+    "$ROOT_HOME/.agents/skills/s"
+  echo SMOKE-SENTINEL-PARITY > "$ROOT_HOME/.vibe/agents/a.toml"
+  echo SMOKE-SENTINEL-PARITY > "$ROOT_HOME/.vibe/skills/s/SKILL.md"
+  echo SMOKE-SENTINEL-PARITY > "$ROOT_HOME/.vibe/prompts/p.md"
+  echo SMOKE-SENTINEL-PARITY > "$ROOT_HOME/.vibe/AGENTS.md"
+  echo SMOKE-SENTINEL-PARITY > "$ROOT_HOME/.agents/skills/s/SKILL.md"
 }
 
-# --- check_settings ----------------------------------------------------------
-
-@test "check_egress_api_key: the short --api placeholder is matched whole" {
-  ANTHROPIC_API_KEY=claude-docker-proxy
-  printf '{"customApiKeyResponses":{"approved":["claude-docker-proxy"]}}' >"$ROOT_HOME/.claude.json"
-  check_egress_api_key >/dev/null
-  [ "$PASS_COUNT" -eq 1 ] && [ "$FAIL_COUNT" -eq 0 ]
+@test "check_host_config: every item present, no hooks or host config passes" {
+  parity_fixture
+  run check_host_config
+  [[ "$output" != *FAIL* ]]
+  [[ "$output" == *"PASS: parity-.agents/skills:"* ]]
+  [[ "$output" == *"PASS: parity-.vibe/AGENTS.md-ro: stubbed"* ]]
+  [[ "$output" == *"PASS: parity-hooks:"* ]]
+  [[ "$output" == *"PASS: parity-host-config:"* ]]
 }
 
-@test "check_egress_api_key: a long key is matched on its last 20 characters" {
-  ANTHROPIC_API_KEY=sk-fake-egress-smoke-api-key-0123456789
-  printf '{"customApiKeyResponses":{"approved":["-api-key-0123456789"]}}' >"$ROOT_HOME/.claude.json"
-  check_egress_api_key >/dev/null
-  [ "$PASS_COUNT" -eq 0 ] && [ "$FAIL_COUNT" -eq 1 ]
-  printf '{"customApiKeyResponses":{"approved":["e-api-key-0123456789"]}}' >"$ROOT_HOME/.claude.json"
-  check_egress_api_key >/dev/null
-  [ "$PASS_COUNT" -eq 1 ]
+@test "check_host_config: a missing item fails" {
+  parity_fixture
+  rm -r "$ROOT_HOME/.agents"
+  run check_host_config
+  [[ "$output" == *"FAIL: parity-.agents/skills:"* ]]
 }
 
-@test "check_egress_api_key: no approval fails" {
-  ANTHROPIC_API_KEY=claude-docker-proxy
-  printf '{}' >"$ROOT_HOME/.claude.json"
-  run check_egress_api_key
-  [[ "$output" == "FAIL: egress-api-key: ANTHROPIC_API_KEY not approved in ~/.claude.json" ]]
+@test "check_host_config: forwarded hooks or host config.toml fail" {
+  parity_fixture
+  : > "$ROOT_HOME/.vibe/hooks.toml"
+  echo '# SMOKE-SENTINEL-HOST-CONFIG' > "$ROOT_HOME/.vibe/config.toml"
+  run check_host_config
+  [[ "$output" == *"FAIL: parity-hooks:"* ]]
+  [[ "$output" == *"FAIL: parity-host-config:"* ]]
 }
 
-@test "check_settings: sentinel mismatch reports size, not content" {
-  mkdir -p "${ROOT_HOME}/.claude"
-  echo '{"token":"secret"}' > "${ROOT_HOME}/.claude/settings.json"
-  EXPECT_SETTINGS=1 EXPECT_SETTINGS_SENTINEL=want run check_settings
-  [[ "$output" == *"FAIL: settings-content"*"19 bytes"* ]]
+# --- check_config ------------------------------------------------------------
+
+seeded() {
+  mkdir -p "${ROOT_HOME}/.vibe"
+  printf '%s\n' "$1" > "${ROOT_HOME}/.vibe/config.toml"
+  chmod "${2:-600}" "${ROOT_HOME}/.vibe/config.toml"
+}
+
+@test "check_config: a seeded 600 copy with the sentinel passes" {
+  seeded '# want'
+  EXPECT_CONFIG=1 EXPECT_CONFIG_SENTINEL=want run check_config
+  [[ "$output" != *FAIL* ]]
+  [[ "$output" == *"PASS: config-mode: seeded config.toml is 600"* ]]
+  [[ "$output" == *"PASS: config-rename"* ]]
+}
+
+@test "check_config: a seeded copy with the wrong mode fails" {
+  seeded '# want' 644
+  EXPECT_CONFIG=1 EXPECT_CONFIG_SENTINEL=want run check_config
+  [[ "$output" == *"FAIL: config-mode: seeded config.toml is 600: expected '600', got '644'"* ]]
+}
+
+@test "check_config: a symlink is not a seeded copy" {
+  mkdir -p "${ROOT_HOME}/.vibe"
+  echo '# want' > "${BATS_TEST_TMPDIR}/elsewhere"
+  ln -s "${BATS_TEST_TMPDIR}/elsewhere" "${ROOT_HOME}/.vibe/config.toml"
+  EXPECT_CONFIG=1 EXPECT_CONFIG_SENTINEL=want run check_config
+  [[ "$output" == "FAIL: config-present:"* ]]
+}
+
+@test "check_config: sentinel mismatch reports size, not content" {
+  seeded 'api_key = "secret"'
+  EXPECT_CONFIG=1 EXPECT_CONFIG_SENTINEL=want run check_config
+  [[ "$output" == *"FAIL: config-content"*"19 bytes"* ]]
   [[ "$output" != *secret* ]]
 }
 
-@test "check_settings: sentinel starting with a dash is matched literally" {
-  mkdir -p "${ROOT_HOME}/.claude"
-  echo '{"x":"-v"}' > "${ROOT_HOME}/.claude/settings.json"
-  EXPECT_SETTINGS=1 EXPECT_SETTINGS_SENTINEL=-v run check_settings
-  [[ "$output" == *"PASS: settings-content"* ]]
-  [[ "$output" == *"PASS: settings-rename"* ]]
+@test "check_config: sentinel starting with a dash is matched literally" {
+  seeded '# -v'
+  EXPECT_CONFIG=1 EXPECT_CONFIG_SENTINEL=-v run check_config
+  [[ "$output" == *"PASS: config-content"* ]]
+  [[ "$output" == *"PASS: config-rename"* ]]
 }
 
-@test "check_settings: no seed on fresh volumes passes when nothing was seeded" {
-  EXPECT_SETTINGS=0 run check_settings
-  [ "$output" = "PASS: settings-absent: no settings file without a seed" ]
+@test "check_config: no seed on fresh volumes passes when nothing was seeded" {
+  EXPECT_CONFIG=0 run check_config
+  [ "$output" = "PASS: config-absent: no config.toml without a seed" ]
 }
 
-@test "check_settings: no seed but a settings file fails" {
-  mkdir -p "${ROOT_HOME}/.claude"
-  echo '{}' > "${ROOT_HOME}/.claude/settings.json"
-  EXPECT_SETTINGS=0 run check_settings
-  [[ "$output" == "FAIL: settings-absent:"* ]]
+@test "check_config: no seed but a config.toml fails" {
+  seeded '# x'
+  EXPECT_CONFIG=0 run check_config
+  [[ "$output" == "FAIL: config-absent:"* ]]
 }
 
-@test "check_settings: keep passes on a persisted file with no seed" {
-  mkdir -p "${ROOT_HOME}/.claude"
-  echo '{"env":{"S":"V2"}}' > "${ROOT_HOME}/.claude/settings.json"
-  EXPECT_SETTINGS=keep EXPECT_SETTINGS_SENTINEL=V2 run check_settings
-  [[ "$output" == *"PASS: settings-keep: no seed mounted this run"* ]]
-  [[ "$output" == *"PASS: settings-content:"* ]]
+@test "check_config: keep passes on a persisted file with no seed" {
+  seeded '# V2' 644
+  EXPECT_CONFIG=keep EXPECT_CONFIG_SENTINEL=V2 run check_config
+  [[ "$output" == *"PASS: config-keep: no seed mounted this run"* ]]
+  [[ "$output" == *"PASS: config-content:"* ]]
   [[ "$output" != *FAIL* ]]
 }
 
-@test "check_settings: keep fails when a seed is mounted" {
-  mkdir -p "${ROOT_HOME}/.claude"
-  echo '{"env":{"S":"V2"}}' > "${ROOT_HOME}/.claude/settings.json"
-  echo '{}' > "$SEED_SETTINGS"
-  EXPECT_SETTINGS=keep EXPECT_SETTINGS_SENTINEL=V2 run check_settings
-  [[ "$output" == *"FAIL: settings-keep: seed present at ${SEED_SETTINGS}"* ]]
+@test "check_config: keep fails when a seed is mounted" {
+  seeded '# V2'
+  echo '# x' > "$SEED_CONFIG"
+  EXPECT_CONFIG=keep EXPECT_CONFIG_SENTINEL=V2 run check_config
+  [[ "$output" == *"FAIL: config-keep: seed present at ${SEED_CONFIG}"* ]]
 }
 
-@test "check_settings: keep fails when the persisted file is gone" {
-  EXPECT_SETTINGS=keep EXPECT_SETTINGS_SENTINEL=V2 run check_settings
-  [[ "$output" == *"FAIL: settings-present:"* ]]
+@test "check_config: keep fails when the persisted file is gone" {
+  EXPECT_CONFIG=keep EXPECT_CONFIG_SENTINEL=V2 run check_config
+  [[ "$output" == *"FAIL: config-present:"* ]]
+}
+
+# --- check_vibe --------------------------------------------------------------
+
+@test "check_vibe: image env and the pinned version pass" {
+  vibe() { echo "vibe 3.1.0"; }
+  VIBE_ENABLE_UPDATE_CHECKS=false VIBE_ENABLE_AUTO_UPDATE=false VIBE_ENABLE_SYSTEM_TRUST_STORE=true \
+    EXPECT_VIBE_VERSION=3.1.0 run check_vibe
+  [[ "$output" != *FAIL* ]]
+  [[ "$output" == *"PASS: vibe-version"* ]]
+}
+
+@test "check_vibe: a wrong version, a failing vibe or missing env fail" {
+  vibe() { echo "vibe 3.0.0"; }
+  EXPECT_VIBE_VERSION=3.1.0 run check_vibe
+  [[ "$output" == *"FAIL: vibe-env: VIBE_ENABLE_UPDATE_CHECKS"* ]]
+  [[ "$output" == *"FAIL: vibe-version"*"got 'vibe 3.0.0'"* ]]
+  vibe() { echo boom >&2; return 3; }
+  EXPECT_VIBE_VERSION=3.1.0 run check_vibe
+  [[ "$output" == *"FAIL: vibe-version"*"got 'exit 3: boom'"* ]]
 }
 
 # --- main --------------------------------------------------------------------
 
-# Stub every check but check_settings with a passing one.
+# Stub every check but check_config with a passing one.
 stub_checks() {
   check_entrypoint_reached() { pass c1; }
   check_identity() { pass c2; }
@@ -455,23 +533,26 @@ stub_checks() {
   check_workspace_write() { pass c5; }
   check_credentials() { pass c6; }
   check_aws_state_masking() { pass c7; }
-  check_api() { pass c8; }
+  check_mistral() { pass c8; }
+  check_az_ca() { pass c8b; }
   check_mask_set() { pass c9; }
+  check_host_config() { pass c10; }
+  check_vibe() { pass c11; }
 }
 
 @test "main exits 1 with RESULT: FAIL when any check fails" {
   stub_checks
-  check_settings() { fail settings; }
+  check_config() { fail config; }
   run main
   [ "$status" -eq 1 ]
-  [[ "$output" == *"Results: 10 passed, 1 failed"* ]]
+  [[ "$output" == *"Results: 13 passed, 1 failed"* ]]
   [[ "$output" == *"RESULT: FAIL" ]]
   [[ "$output" != *"RESULT: PASS"* ]]
 }
 
 @test "main exits 0 with RESULT: PASS when every check passes" {
   stub_checks
-  check_settings() { pass settings; }
+  check_config() { pass config; }
   run main
   [ "$status" -eq 0 ]
   [[ "$output" == *"RESULT: PASS" ]]

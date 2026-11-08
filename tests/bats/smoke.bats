@@ -12,7 +12,7 @@ setup() {
   # shellcheck source=../smoke/smoke.sh
   source "${BATS_TEST_DIRNAME}/../smoke/smoke.sh"
   id() { echo 1000; }
-  openssl() { touch "${FAKE_HOME}/api-ca.crt"; }
+  openssl() { touch "${FAKE_HOME}/az-ca.crt"; }
   STAT_UID=1000   # empty = both stat calls fail
   stat() { [ -n "$STAT_UID" ] && echo "$STAT_UID"; }
 }
@@ -50,7 +50,8 @@ exit "\$(cat "${BATS_TEST_TMPDIR}/fake.rc" 2>/dev/null || echo 0)"
 EOF
   fake_docker_bin
   write_docker_shim
-  setup_settings
+  setup_config
+  setup_host_config
   parse_optins
 }
 
@@ -60,7 +61,7 @@ EOF
   IMAGE=img:tag
   parse_args
   [ "$HOST_UID_ARG" = 1000 ] && [ "$HOST_GID_ARG" = 1000 ]
-  [ "$VOLSTATE" = cold ] && [ "$RO" = 0 ] && [ "$EPHEMERAL" = 0 ] && [ "$SETTINGS" = 1 ]
+  [ "$VOLSTATE" = cold ] && [ "$RO" = 0 ] && [ "$EPHEMERAL" = 0 ] && [ "$CONFIG" = 1 ]
   [ "$OPTINS" = "" ] && [ "$IMAGE" = img:tag ]
 }
 
@@ -71,10 +72,10 @@ EOF
 
 @test "every flag is parsed" {
   parse_args --uid=501 --gid=20 --optins=aws,glab --volstate=warm --ro=1 \
-    --ephemeral=1 --settings=0 --image=x:y
+    --ephemeral=1 --config=0 --image=x:y
   [ "$HOST_UID_ARG" = 501 ] && [ "$HOST_GID_ARG" = 20 ] && [ "$OPTINS" = aws,glab ]
   [ "$VOLSTATE" = warm ] && [ "$RO" = 1 ] && [ "$EPHEMERAL" = 1 ]
-  [ "$SETTINGS" = 0 ] && [ "$IMAGE" = x:y ]
+  [ "$CONFIG" = 0 ] && [ "$IMAGE" = x:y ]
 }
 
 @test "unknown flag is rejected" {
@@ -85,7 +86,7 @@ EOF
 
 @test "flag values outside their range are rejected" {
   local bad
-  for bad in --ro=yes --ephemeral=true --settings=2 --volstate=wram --uid=abc --gid=-1; do
+  for bad in --ro=yes --ephemeral=true --config=2 --volstate=wram --uid=abc --gid=-1; do
     run parse_args "$bad"
     [ "$status" -eq 1 ] || { echo "accepted $bad"; return 1; }
   done
@@ -105,16 +106,39 @@ EOF
 }
 
 @test "every opt-in sets its flag, env and fixture" {
-  setup_cell --optins=aws,glab,tfe,api,az
-  [ "${RUN_FLAGS[*]}" = "--aws --glab --tfe --api --az" ]
+  setup_cell --optins=aws,glab,tfe,mistral,az
+  [ "${RUN_FLAGS[*]}" = "--aws --glab --tfe --mistral --az" ]
   [[ " ${OPTIN_ENV[*]} " == *" AWS_PROFILE=default "* ]]
   [[ " ${OPTIN_ENV[*]} " == *" GITLAB_TOKEN=fake-gitlab-token "* ]]
   [[ " ${OPTIN_ENV[*]} " == *" TF_TOKEN_app_terraform_io=fake-tfe-token "* ]]
-  [[ " ${OPTIN_ENV[*]} " == *" CLAUDE_DOCKER_API_CA=${FAKE_HOME}/api-ca.crt "* ]]
+  [[ " ${OPTIN_ENV[*]} " == *" VIBE_DOCKER_AZ_CA=${FAKE_HOME}/az-ca.crt "* ]]
   [[ " ${OPTIN_ENV[*]} " == *" AZURE_DEVOPS_EXT_PAT=SMOKE-SENTINEL-AZ "* ]]
   grep -q SMOKE-SENTINEL-AWS "${FAKE_HOME}/.aws/config"
   grep -q SMOKE-SENTINEL-GLAB "${FAKE_HOME}/.config/glab-cli/config.yml"
   grep -q SMOKE-SENTINEL-TFE "${FAKE_HOME}/.terraform.d/credentials.tfrc.json"
+}
+
+@test "--mistral is only a flag: the key is exported for every cell" {
+  setup_cell --optins=mistral
+  [ "${RUN_FLAGS[*]}" = "--mistral" ]
+  [[ " ${OPTIN_ENV[*]} " != *MISTRAL_API_KEY* ]]
+}
+
+@test "every cell stages the parity items and the decoys" {
+  setup_cell
+  local f
+  for f in .vibe/agents/smoke.toml .vibe/skills/smoke/SKILL.md .vibe/prompts/smoke.md \
+           .vibe/AGENTS.md .agents/skills/smoke/SKILL.md; do
+    grep -q SMOKE-SENTINEL-PARITY "${FAKE_HOME}/$f" || { echo "no fixture at $f"; return 1; }
+  done
+  grep -q SMOKE-SENTINEL-HOOKS "${FAKE_HOME}/.vibe/hooks.toml"
+  grep -q SMOKE-SENTINEL-HOST-CONFIG "${FAKE_HOME}/.vibe/config.toml"
+  grep -qx '# SMOKE-SENTINEL-CONFIG' "${FAKE_HOME}/.vibe/config.docker.toml"
+}
+
+@test "--config=0 stages no config.docker.toml" {
+  setup_cell --config=0
+  [ ! -e "${FAKE_HOME}/.vibe/config.docker.toml" ]
 }
 
 @test "unknown opt-in is rejected" {
@@ -143,13 +167,13 @@ shim() {
 @test "shim rewrites ids and volumes and drops -it on the agent run" {
   setup_cell --uid=501 --gid=20 --image=img:1
   run shim run -it -e HOST_UID=1000 -e HOST_GID=1000 \
-    -v claude-code-root:/root -v claude-code-home:/root/.claude img:1 claude
+    -v vibe-root:/root -v vibe-home:/root/.vibe img:1 vibe
   [ "$status" -eq 0 ]
   run cat "${BATS_TEST_TMPDIR}/docker.argv"
   [[ "$output" != *"-it"* ]]
   [[ "$output" == *"HOST_UID=501"*"HOST_GID=20"* ]]
-  [[ "$output" == *"smoke-test-$$-root:/root"*"smoke-test-$$-home:/root/.claude"* ]]
-  [[ "$output" != *claude-code-root* ]]
+  [[ "$output" == *"smoke-test-$$-root:/root"*"smoke-test-$$-home:/root/.vibe"* ]]
+  [[ "$output" != *vibe-root* ]]
 }
 
 @test "shim passes a sidecar run through untouched" {
@@ -187,8 +211,11 @@ shim() {
   run cat "${BATS_TEST_TMPDIR}/run.env"
   [[ "$output" == *"HOME=${FAKE_HOME}"* ]]
   [[ "$output" == *"AZURE_DEVOPS_EXT_PAT=SMOKE-SENTINEL-AZ"* ]]
-  [[ "$output" == *"CLAUDE_DOCKER_IMAGE=img:1"* ]]
-  [[ "$output" == *"CLAUDE_DOCKER_TEST_ENTRY=export EXPECT_UID=1000 EXPECT_GID=1000 EXPECT_OPTINS=az EXPECT_RO=1"* ]]
+  [[ "$output" == *"MISTRAL_API_KEY=SMOKE-SENTINEL-MISTRAL"* ]]
+  [[ "$output" == *"VIBE_DOCKER_IMAGE=img:1"* ]]
+  [[ "$output" == *"VIBE_DOCKER_TEST_ENTRY=export EXPECT_UID=1000 EXPECT_GID=1000 EXPECT_OPTINS=az EXPECT_RO=1"* ]]
+  [[ "$output" == *"EXPECT_VIBE_VERSION=$VIBE_VERSION;"* ]]
+  [ -n "$VIBE_VERSION" ]
   [[ "$output" != *GH_TOKEN* ]]
 }
 
@@ -209,8 +236,8 @@ shim() {
 record_passes() {
   run_container() {
     local seed=no-seed
-    [ -f "$SETTINGS_FIXTURE" ] && seed=$(cat "$SETTINGS_FIXTURE")
-    echo "mode=${EXPECT_SETTINGS_MODE} sentinel=${SETTINGS_SENTINEL} seed=${seed}" >> "${BATS_TEST_TMPDIR}/passes"
+    [ -f "$CONFIG_FIXTURE" ] && seed=$(head -1 "$CONFIG_FIXTURE")
+    echo "mode=${EXPECT_CONFIG_MODE} sentinel=${CONFIG_SENTINEL} seed=${seed}" >> "${BATS_TEST_TMPDIR}/passes"
   }
 }
 
@@ -226,19 +253,19 @@ record_passes() {
   record_passes
   run_cell
   run cat "${BATS_TEST_TMPDIR}/passes"
-  [ "${lines[0]}" = 'mode=1 sentinel=SMOKE-SENTINEL-SETTINGS seed={"env":{"SMOKE_SENTINEL":"SMOKE-SENTINEL-SETTINGS"}}' ]
-  [ "${lines[1]}" = 'mode=1 sentinel=SMOKE-SENTINEL-SETTINGS-V2 seed={"env":{"SMOKE_SENTINEL":"SMOKE-SENTINEL-SETTINGS-V2"}}' ]
-  [ "${lines[2]}" = 'mode=keep sentinel=SMOKE-SENTINEL-SETTINGS-V2 seed=no-seed' ]
+  [ "${lines[0]}" = 'mode=1 sentinel=SMOKE-SENTINEL-CONFIG seed=# SMOKE-SENTINEL-CONFIG' ]
+  [ "${lines[1]}" = 'mode=1 sentinel=SMOKE-SENTINEL-CONFIG-V2 seed=# SMOKE-SENTINEL-CONFIG-V2' ]
+  [ "${lines[2]}" = 'mode=keep sentinel=SMOKE-SENTINEL-CONFIG-V2 seed=no-seed' ]
   [ "${#lines[@]}" -eq 3 ]
 }
 
-@test "warm cell without settings runs twice, unseeded" {
-  setup_cell --volstate=warm --settings=0
+@test "warm cell without a config runs twice, unseeded" {
+  setup_cell --volstate=warm --config=0
   record_passes
   run_cell
   run cat "${BATS_TEST_TMPDIR}/passes"
   [ "${#lines[@]}" -eq 2 ]
-  [ "${lines[1]}" = 'mode=0 sentinel=SMOKE-SENTINEL-SETTINGS seed=no-seed' ]
+  [ "${lines[1]}" = 'mode=0 sentinel=SMOKE-SENTINEL-CONFIG seed=no-seed' ]
 }
 
 # --- assert_host -----------------------------------------------------------
@@ -359,6 +386,14 @@ partial_repo() {
   run bash -c 'source "$1"; parse_args; setup_workspace' _ "$sut"
   [ "$status" -eq 1 ]
   [[ "$output" == *"run.sh not found"* ]]
+}
+
+@test "setup_workspace dies without the vibe version pin" {
+  local sut
+  sut=$(partial_repo run.sh tests/smoke/assert-in-container.sh)
+  run bash -c 'source "$1"; parse_args; setup_workspace' _ "$sut"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no VIBE_VERSION in"*"pins/vibe.env"* ]]
 }
 
 @test "write_docker_shim dies without docker on PATH" {

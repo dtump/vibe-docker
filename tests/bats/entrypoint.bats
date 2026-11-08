@@ -4,12 +4,12 @@
 setup() {
   # shellcheck source=../../entrypoint.sh
   source "${BATS_TEST_DIRNAME}/../../entrypoint.sh"
-  SEED_SETTINGS="$BATS_TEST_TMPDIR/seed.json"
+  SEED_CONFIG="$BATS_TEST_TMPDIR/seed.toml"
   ROOT_HOME="$BATS_TEST_TMPDIR/root"
   CA_DIR="$BATS_TEST_TMPDIR/ca"
   GIT_SYSTEM_CONFIG="$BATS_TEST_TMPDIR/gitconfig"
   mkdir -p "$ROOT_HOME" "$CA_DIR"
-  unset HOST_UID HOST_GID CLAUDE_DOCKER_TRUSTED_WORKSPACES
+  unset HOST_UID HOST_GID VIBE_DOCKER_TRUSTED_WORKSPACES
   # Each stub echoes its call so tests can assert on what ran.
   chown() { echo "chown $*"; }
   groupadd() { echo "groupadd $*"; }
@@ -18,12 +18,12 @@ setup() {
   update-ca-certificates() { echo ran >> "$BATS_TEST_TMPDIR/ca.log"; }
   find() { :; }
   xargs() { :; }
-  # Entries getent knows about, e.g. "passwd claude" or "group 1000".
+  # Entries getent knows about, e.g. "passwd vibe" or "group 1000".
   KNOWN=""
   getent() { [[ " $KNOWN " == *" $1 $2 "* ]]; }
-  # UID `id -u claude` reports for a pre-existing claude user.
-  CLAUDE_UID=1000
-  id() { echo "$CLAUDE_UID"; }
+  # UID `id -u vibe` reports for a pre-existing vibe user.
+  VIBE_UID=1000
+  id() { echo "$VIBE_UID"; }
   # exec bypasses shell functions, so runuser is a PATH stub.
   mkdir -p "$BATS_TEST_TMPDIR/bin"
   printf '#!/bin/sh\necho "runuser $*"\n' > "$BATS_TEST_TMPDIR/bin/runuser"
@@ -43,12 +43,12 @@ setup() {
   [ "$output" = "hello" ]
 }
 
-@test "non-root HOST_UID creates claude and drops via runuser" {
-  HOST_UID=1000 HOST_GID=1000 run main claude --flag
+@test "non-root HOST_UID creates vibe and drops via runuser" {
+  HOST_UID=1000 HOST_GID=1000 run main vibe --flag
   [ "$status" -eq 0 ]
-  [[ "$output" == *"groupadd -o -g 1000 claude"* ]]
-  [[ "$output" == *"useradd -o -K UID_MIN=1 -u 1000 -g 1000 -d /root -s /bin/bash -M -N claude"* ]]
-  [[ "$output" == *"runuser -u claude -- claude --flag"* ]]
+  [[ "$output" == *"groupadd -o -g 1000 vibe"* ]]
+  [[ "$output" == *"useradd -o -K UID_MIN=1 -u 1000 -g 1000 -d /root -s /bin/bash -M -N vibe"* ]]
+  [[ "$output" == *"runuser -u vibe -- vibe --flag"* ]]
 }
 
 @test "existing GID is reused, no groupadd" {
@@ -59,34 +59,34 @@ setup() {
   [[ "$output" == *"useradd -o -K UID_MIN=1 -u 501 -g 20"* ]]
 }
 
-@test "HOST_UID colliding with an image user still creates claude" {
+@test "HOST_UID colliding with an image user still creates vibe" {
   KNOWN="passwd 1000 group 1000"
   run ensure_user 1000 1000
   [ "$status" -eq 0 ]
   [[ "$output" == *"useradd -o -K UID_MIN=1 -u 1000 -g 1000"* ]]
 }
 
-@test "existing claude user with HOST_UID is left alone" {
-  KNOWN="passwd claude"
+@test "existing vibe user with HOST_UID is left alone" {
+  KNOWN="passwd vibe"
   run ensure_user 1000 1000
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
-@test "existing claude user with another UID is refused" {
-  KNOWN="passwd claude"
-  CLAUDE_UID=0
+@test "existing vibe user with another UID is refused" {
+  KNOWN="passwd vibe"
+  VIBE_UID=0
   run ensure_user 1000 1000
   [ "$status" -ne 0 ]
-  [ "$output" = "entrypoint: ERROR existing claude user has UID 0, expected HOST_UID 1000" ]
+  [ "$output" = "entrypoint: ERROR existing vibe user has UID 0, expected HOST_UID 1000" ]
 }
 
-@test "existing claude user with another UID stops main before runuser" {
-  KNOWN="passwd claude"
-  CLAUDE_UID=1001
-  HOST_UID=1000 HOST_GID=1000 run main claude
+@test "existing vibe user with another UID stops main before runuser" {
+  KNOWN="passwd vibe"
+  VIBE_UID=1001
+  HOST_UID=1000 HOST_GID=1000 run main vibe
   [ "$status" -ne 0 ]
-  [[ "$output" == *"existing claude user has UID 1001, expected HOST_UID 1000"* ]]
+  [[ "$output" == *"existing vibe user has UID 1001, expected HOST_UID 1000"* ]]
   [[ "$output" != *runuser* ]]
 }
 
@@ -115,13 +115,13 @@ setup() {
   [ "$output" = "entrypoint: WARN chown: find: '/root/y': Permission denied" ]
 }
 
-@test "chown walk skips a missing /root/.claude" {
+@test "chown walk skips a missing /root/.vibe" {
   find() { printf '%s\n' "$@" >"$BATS_TEST_TMPDIR/find.args"; }
   chown_volumes 1000 1000
   [ "$(head -2 "$BATS_TEST_TMPDIR/find.args")" = "$ROOT_HOME"$'\n'"-xdev" ]
-  mkdir "$ROOT_HOME/.claude"
+  mkdir "$ROOT_HOME/.vibe"
   chown_volumes 1000 1000
-  [ "$(head -2 "$BATS_TEST_TMPDIR/find.args")" = "$ROOT_HOME"$'\n'"$ROOT_HOME/.claude" ]
+  [ "$(head -2 "$BATS_TEST_TMPDIR/find.args")" = "$ROOT_HOME"$'\n'"$ROOT_HOME/.vibe" ]
 }
 
 @test "chown walk runs under LC_ALL=C" {
@@ -136,7 +136,7 @@ setup() {
 trusted() { command git config --file "$GIT_SYSTEM_CONFIG" --get-all safe.directory | paste -sd,; }
 
 @test "trust_workspaces: each vouched-for workspace and its nested repos are trusted" {
-  CLAUDE_DOCKER_TRUSTED_WORKSPACES=/workspaces/repo:/workspaces/other run trust_workspaces
+  VIBE_DOCKER_TRUSTED_WORKSPACES=/workspaces/repo:/workspaces/other run trust_workspaces
   [ "$status" -eq 0 ] && [ -z "$output" ]
   [ "$(trusted)" = "/workspaces/repo,/workspaces/repo/*,/workspaces/other,/workspaces/other/*" ]
 }
@@ -148,7 +148,7 @@ trusted() { command git config --file "$GIT_SYSTEM_CONFIG" --get-all safe.direct
 }
 
 @test "trust_workspaces: anything but /workspaces/<name> is refused with a WARN" {
-  CLAUDE_DOCKER_TRUSTED_WORKSPACES='*:/workspaces/*:/workspaces/a/b:/workspaces/..:/workspaces/:/etc:/workspaces/ok' \
+  VIBE_DOCKER_TRUSTED_WORKSPACES='*:/workspaces/*:/workspaces/a/b:/workspaces/..:/workspaces/:/etc:/workspaces/ok' \
     run trust_workspaces
   [ "$status" -eq 0 ]
   [ "$(trusted)" = "/workspaces/ok,/workspaces/ok/*" ]
@@ -157,27 +157,27 @@ trusted() { command git config --file "$GIT_SYSTEM_CONFIG" --get-all safe.direct
 
 @test "trust_workspaces: also runs when the session stays root" {
   # Container root is not the host owner either, so git still needs the entry.
-  CLAUDE_DOCKER_TRUSTED_WORKSPACES=/workspaces/repo run main echo hello
+  VIBE_DOCKER_TRUSTED_WORKSPACES=/workspaces/repo run main echo hello
   [ "$status" -eq 0 ] && [ "$output" = hello ]
   [ "$(trusted)" = "/workspaces/repo,/workspaces/repo/*" ]
 }
 
 @test "trust_workspaces: a failed write stops main before the exec" {
   git() { return 1; }
-  CLAUDE_DOCKER_TRUSTED_WORKSPACES=/workspaces/repo run main echo should-not-run
+  VIBE_DOCKER_TRUSTED_WORKSPACES=/workspaces/repo run main echo should-not-run
   [ "$status" -ne 0 ]
   [[ "$output" == *"entrypoint: ERROR could not trust /workspaces/repo for git"* ]]
   [[ "$output" != *should-not-run* ]]
 }
 
-@test "no claude-docker CA skips update-ca-certificates" {
+@test "no vibe-docker CA skips update-ca-certificates" {
   run install_cas
   [ "$status" -eq 0 ]
   [ ! -e "$BATS_TEST_TMPDIR/ca.log" ]
 }
 
-@test "claude-docker CA present runs update-ca-certificates" {
-  touch "$CA_DIR/claude-docker-gh.crt"
+@test "vibe-docker CA present runs update-ca-certificates" {
+  touch "$CA_DIR/vibe-docker-gh.crt"
   run install_cas
   [ "$status" -eq 0 ]
   [ -z "$output" ]
@@ -185,7 +185,7 @@ trusted() { command git config --file "$GIT_SYSTEM_CONFIG" --get-all safe.direct
 }
 
 @test "CA refresh failure warns and the entrypoint continues" {
-  touch "$CA_DIR/claude-docker-gh.crt"
+  touch "$CA_DIR/vibe-docker-gh.crt"
   update-ca-certificates() { return 1; }
   HOST_UID=0 run main echo hello
   [ "$status" -eq 0 ]
@@ -193,35 +193,60 @@ trusted() { command git config --file "$GIT_SYSTEM_CONFIG" --get-all safe.direct
   [[ "$output" == *"hello"* ]]
 }
 
-@test "settings seed replaces settings.json with mode 600" {
-  echo '{"a":1}' > "$SEED_SETTINGS"
-  mkdir -p "$ROOT_HOME/.claude"
-  echo stale > "$ROOT_HOME/.claude/settings.json"
-  run seed_settings
+@test "config seed replaces config.toml with mode 600" {
+  echo 'theme = "mistral-dark"' > "$SEED_CONFIG"
+  mkdir -p "$ROOT_HOME/.vibe"
+  echo stale > "$ROOT_HOME/.vibe/config.toml"
+  run seed_config
   [ "$status" -eq 0 ]
-  [ "$output" = "chown root $ROOT_HOME/.claude" ]
-  [ "$(cat "$ROOT_HOME/.claude/settings.json")" = '{"a":1}' ]
-  [ "$(stat -c %a "$ROOT_HOME/.claude/settings.json")" = 600 ]
+  [ "$output" = "chown root $ROOT_HOME/.vibe" ]
+  [ "$(cat "$ROOT_HOME/.vibe/config.toml")" = 'theme = "mistral-dark"' ]
+  [ "$(stat -c %a "$ROOT_HOME/.vibe/config.toml")" = 600 ]
+  # A regular file, not a link to the seed: vibe renames over it in-session.
+  [ -f "$ROOT_HOME/.vibe/config.toml" ] && [ ! -L "$ROOT_HOME/.vibe/config.toml" ]
 }
 
-@test "absent settings seed touches nothing" {
-  run seed_settings
+@test "config seed creates ~/.vibe when the volume is fresh" {
+  echo 'active_model = "devstral"' > "$SEED_CONFIG"
+  run seed_config
+  [ "$status" -eq 0 ]
+  [ "$(cat "$ROOT_HOME/.vibe/config.toml")" = 'active_model = "devstral"' ]
+}
+
+@test "absent config seed touches nothing" {
+  run seed_config
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-  [ ! -e "$ROOT_HOME/.claude" ]
+  [ ! -e "$ROOT_HOME/.vibe" ]
 }
 
-@test "failed settings seed aborts before the exec" {
-  echo '{}' > "$SEED_SETTINGS"
+@test "absent config seed keeps the config.toml an earlier session saved" {
+  mkdir -p "$ROOT_HOME/.vibe"
+  echo 'theme = "saved"' > "$ROOT_HOME/.vibe/config.toml"
+  run seed_config
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(cat "$ROOT_HOME/.vibe/config.toml")" = 'theme = "saved"' ]
+}
+
+@test "failed config seed aborts before the exec" {
+  echo '' > "$SEED_CONFIG"
   chown() { return 7; }
   run main echo hello
   [ "$status" -eq 7 ]
   [[ "$output" != *hello* ]]
 }
 
+@test "the seed path is fixed, not taken from the environment" {
+  # Re-source with a hostile environment: the globals are plain assignments.
+  export SEED_CONFIG=/etc/shadow
+  source "${BATS_TEST_DIRNAME}/../../entrypoint.sh"
+  [ "$SEED_CONFIG" = /run/vibe-docker/config.toml ]
+}
+
 @test "failed groupadd aborts before useradd and runuser" {
   groupadd() { return 9; }
-  HOST_UID=1000 HOST_GID=1000 run main claude
+  HOST_UID=1000 HOST_GID=1000 run main vibe
   [ "$status" -eq 9 ]
   [[ "$output" != *useradd* ]]
   [[ "$output" != *runuser* ]]
@@ -229,109 +254,7 @@ trusted() { command git config --file "$GIT_SYSTEM_CONFIG" --get-all safe.direct
 
 @test "failed useradd aborts before runuser" {
   useradd() { return 9; }
-  HOST_UID=1000 HOST_GID=1000 run main claude
+  HOST_UID=1000 HOST_GID=1000 run main vibe
   [ "$status" -eq 9 ]
   [[ "$output" != *runuser* ]]
-}
-
-# --- approve_api_key (--egress-lock) ---------------------------------------
-
-API_KEY="sk-ant-test-0123456789abcdefghijKLMNOPQRSTUV"
-API_KEY_ID="${API_KEY: -20}"
-
-# Runs approve_api_key with the lock on and $1 (default $API_KEY) as the key.
-approve() {
-  CLAUDE_DOCKER_EGRESS_LOCK=1 ANTHROPIC_API_KEY="${1-$API_KEY}" run approve_api_key
-}
-
-@test "approve_api_key: a fresh volume gets the key approved, owner-only" {
-  approve
-  [ "$status" -eq 0 ]
-  [ "$(jq -c . "$ROOT_HOME/.claude.json")" = "{\"customApiKeyResponses\":{\"rejected\":[],\"approved\":[\"$API_KEY_ID\"]}}" ]
-  [ "$(stat -c %a "$ROOT_HOME/.claude.json")" = 600 ]
-  [ "$(ls -A "$ROOT_HOME")" = .claude.json ]
-}
-
-@test "approve_api_key: an existing config is kept and the key not duplicated" {
-  printf '%s' '{"hasCompletedOnboarding":true,"customApiKeyResponses":{"approved":["other"],"rejected":["x"]}}' \
-    > "$ROOT_HOME/.claude.json"
-  approve
-  approve
-  [ "$status" -eq 0 ]
-  [ "$(jq -c . "$ROOT_HOME/.claude.json")" = "{\"hasCompletedOnboarding\":true,\"customApiKeyResponses\":{\"approved\":[\"other\",\"$API_KEY_ID\"],\"rejected\":[\"x\"]}}" ]
-  [ "$(ls -A "$ROOT_HOME")" = .claude.json ]
-}
-
-@test "approve_api_key: the key is trimmed, as Claude Code does" {
-  approve "  $API_KEY"$'\n'
-  [ "$(jq -c .customApiKeyResponses.approved "$ROOT_HOME/.claude.json")" = "[\"$API_KEY_ID\"]" ]
-}
-
-@test "approve_api_key: a key shorter than 20 characters is approved whole" {
-  # Under --api the agent sees the sidecar's 19-character placeholder.
-  approve claude-docker-proxy
-  [ "$(jq -c .customApiKeyResponses.approved "$ROOT_HOME/.claude.json")" = '["claude-docker-proxy"]' ]
-}
-
-@test "approve_api_key: no lock or no key touches nothing" {
-  CLAUDE_DOCKER_EGRESS_LOCK="" ANTHROPIC_API_KEY="$API_KEY" run approve_api_key
-  [ "$status" -eq 0 ]
-  approve ""
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-  [ ! -e "$ROOT_HOME/.claude.json" ]
-}
-
-@test "approve_api_key: invalid JSON is left alone with a WARN" {
-  printf '{not json' > "$ROOT_HOME/.claude.json"
-  approve
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"$ROOT_HOME/.claude.json is not valid JSON; not approving ANTHROPIC_API_KEY"* ]]
-  [ "$(cat "$ROOT_HOME/.claude.json")" = '{not json' ]
-  [ "$(ls -A "$ROOT_HOME")" = .claude.json ]
-}
-
-@test "approve_api_key: a symlinked .claude.json is not followed" {
-  local other="$BATS_TEST_TMPDIR/other" dest
-  mkdir -p "$other"
-  printf '{"secret":1}' > "$other/secret.json"
-  for dest in "$other/secret.json" "$other/missing.json"; do
-    rm -f "$ROOT_HOME/.claude.json"
-    ln -s "$dest" "$ROOT_HOME/.claude.json"
-    approve
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"$ROOT_HOME/.claude.json is not a regular file; not approving ANTHROPIC_API_KEY"* ]]
-    [ -L "$ROOT_HOME/.claude.json" ]
-  done
-  [ "$(cat "$other/secret.json")" = '{"secret":1}' ]
-  [ ! -e "$other/missing.json" ]
-  [ "$(ls -A "$ROOT_HOME")" = .claude.json ]
-}
-
-@test "approve_api_key: chowns ROOT_HOME back to root before writing" {
-  approve
-  [[ "$output" == *"chown root $ROOT_HOME"* ]]
-}
-
-@test "approve_api_key: a failed chown stops before writing" {
-  chown() { return 7; }
-  approve
-  [ "$status" -eq 7 ]
-  [ ! -e "$ROOT_HOME/.claude.json" ]
-}
-
-@test "approve_api_key: a failed rename leaves no temp file in the volume" {
-  printf '{}' > "$ROOT_HOME/.claude.json"
-  mv() { return 5; }
-  approve
-  [ "$status" -eq 5 ]
-  [ "$(cat "$ROOT_HOME/.claude.json")" = '{}' ]
-  [ "$(ls -A "$ROOT_HOME")" = .claude.json ]
-}
-
-@test "approve_api_key: a failed mktemp stops before writing" {
-  mktemp() { return 6; }
-  approve
-  [ "$status" -eq 6 ]
-  [ -z "$(ls -A "$ROOT_HOME")" ]
 }
