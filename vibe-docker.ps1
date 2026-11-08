@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Schuberg Philis
 #
-# PowerShell entry point for claude-docker on Windows. A thin launcher, not a
+# PowerShell entry point for vibe-docker on Windows. A thin launcher, not a
 # port: it runs run.sh under the bash that ships with Git for Windows, so every
 # flag, mount and security control stays in one script. Usage is identical:
 #
-#   claude-docker C:\Users\me\dev\repo -- --resume
+#   vibe-docker C:\Users\me\dev\repo -- --resume
 #
 # Deliberately never calls a bare `bash`: on Windows that usually resolves to
 # C:\Windows\System32\bash.exe, which is WSL's — run.sh would then run inside a
@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 # installer's PATH option; bash.exe is always <GitRoot>\bin\bash.exe.
 $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $git) {
-  [Console]::Error.WriteLine("claude-docker: Git for Windows not found on PATH - install it from https://git-scm.com/download/win")
+  [Console]::Error.WriteLine("vibe-docker: Git for Windows not found on PATH - install it from https://git-scm.com/download/win")
   exit 1
 }
 $bash = $null
@@ -29,7 +29,7 @@ for ($i = 0; $i -lt 3 -and $dir; $i++) {
   $dir = Split-Path -Parent $dir
 }
 if (-not $bash) {
-  [Console]::Error.WriteLine("claude-docker: found $($git.Source) but no bin\bash.exe next to it - is this a Git for Windows install?")
+  [Console]::Error.WriteLine("vibe-docker: found $($git.Source) but no bin\bash.exe next to it - is this a Git for Windows install?")
   exit 1
 }
 
@@ -38,9 +38,9 @@ if (-not $bash) {
 $runSh = (Join-Path $PSScriptRoot 'run.sh') -replace '\\', '/'
 
 # Git Bash's own launcher sets these; a bare bash.exe started from PowerShell
-# may not. HOME is where run.sh finds ~/.claude, ~/.aws, ~/.cache/claude-docker
-# (bash converts the Windows form itself). TERM is forwarded into the container,
-# where Claude's UI needs it; Windows Terminal and conhost both speak xterm.
+# may not. HOME is where run.sh finds ~/.vibe, ~/.agents, ~/.aws and
+# ~/.cache/vibe-docker (bash converts the Windows form itself). TERM is forwarded into the container,
+# where vibe's TUI needs it; Windows Terminal and conhost both speak xterm.
 # Set for the child only and restored, so the PowerShell session is unchanged.
 $saved = @{ HOME = $env:HOME; TERM = $env:TERM }
 try {
