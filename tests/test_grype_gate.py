@@ -69,7 +69,7 @@ class GrypeGateTests(unittest.TestCase):
         got = [inputs(s) for s in self.steps["ci.yml"]]
         self.assertEqual(
             sorted(i.get("image") or "path:" + i.get("path", "") for i in got),
-            ["claude-docker:ci", "path:."],
+            ["path:.", "vibe-docker:ci"],
         )
         for i in got:
             self.assertEqual(i.get("config"), ".grype.yaml")
