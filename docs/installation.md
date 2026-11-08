@@ -18,14 +18,14 @@ Verify with `docker buildx version`, then rerun the same `docker build` — with
 
 ## Prebuilt image from GHCR
 
-Released versions are published to `ghcr.io/schubergphilis/claude-docker`, so you can skip the build:
+Released versions are published to `ghcr.io/dtump/vibe-docker`, so you can skip the build:
 
 ```bash
-docker pull ghcr.io/schubergphilis/claude-docker:v0.1.0
-export CLAUDE_DOCKER_IMAGE=ghcr.io/schubergphilis/claude-docker:v0.1.0
+docker pull ghcr.io/dtump/vibe-docker:v0.1.0
+export VIBE_DOCKER_IMAGE=ghcr.io/dtump/vibe-docker:v0.1.0
 ```
 
-`CLAUDE_DOCKER_IMAGE` is the existing image override ([Extending the image](usage.md#extending-the-image) uses the same variable); `run.sh` still defaults to `claude-code:local`, and building from your checkout stays fully supported. Pin whichever you use — an image and the `run.sh` beside it are not independently versioned.
+`VIBE_DOCKER_IMAGE` is the existing image override ([Extending the image](usage.md#extending-the-image) uses the same variable); `run.sh` still defaults to `mistral-vibe:local`, and building from your checkout stays fully supported. Pin whichever you use — an image and the `run.sh` beside it are not independently versioned.
 
 **Pin the full `v`-prefixed tag.** A `v0.1.0` tag publishes exactly `:v0.1.0` — there is no `latest`, no `:0.1`, and no semver expansion. The publishing action forces `flavor: latest=false` on `docker/metadata-action`'s default `type=ref` tagging and exposes no input to change either.
 
