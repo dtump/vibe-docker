@@ -7,11 +7,11 @@ heredoc, so its `{$VAR}` / `{env.VAR}` references reach Caddy unexpanded and no
 credential is ever baked into a staged file. Each heredoc is run through bash
 with those variables set and must come out byte for byte.
 
-Behavioural half: run.sh's own staging functions write the glab and api site
-config into a temp dir, a real Caddy serves it, and mock upstreams record what
+Behavioural half: run.sh's own staging functions write the glab site config
+into a temp dir, a real Caddy serves it, and mock upstreams record what
 arrives. Skipped unless a `caddy` binary is on PATH (or named by CADDY_BIN) —
 use the version pinned in run.sh's PROXY_IMAGE; CI copies it out of that image
-and sets CLAUDE_DOCKER_TEST_REQUIRE_CADDY=1 so a missing binary fails. gh's sites listen on :443 and
+and sets VIBE_DOCKER_TEST_REQUIRE_CADDY=1 so a missing binary fails. gh's sites listen on :443 and
 are covered by tests/integration/gh-proxy-integration.sh instead; Docker-level wiring
 (--add-host, env in the agent container) is covered there and in
 tests/bats/run.bats.
@@ -32,7 +32,6 @@ import tempfile
 import threading
 import time
 import unittest
-import urllib.request
 from pathlib import Path
 
 RUN_SH = Path(__file__).resolve().parent.parent / "run.sh"
@@ -43,10 +42,8 @@ HEREDOC = re.compile(
 SECRETS = {
     "GH_PROXY_BASIC": "Basic LEAK", "GH_PROXY_BEARER": "Bearer LEAK",
     "GLAB_PROXY_BEARER": "Bearer LEAK", "GLAB_PROXY_BASIC": "Basic LEAK",
-    "API_PROXY_KEY": "LEAK", "API_PROXY_BEARER": "Bearer LEAK",
     "GH_HOST_TOKEN": "LEAK", "GLAB_HOST_TOKEN": "LEAK",
     "GLAB_PROXY_SITE": "LEAK", "GLAB_PROXY_UPSTREAM": "LEAK",
-    "API_PROXY_UPSTREAM": "LEAK", "API_PROXY_PREFIX": "LEAK",
 }
 
 
@@ -65,33 +62,17 @@ class ConstantConfigTest(unittest.TestCase):
             self.assertEqual(out, body, target)
             self.assertNotIn("LEAK", out, target)
             found[target] = body
-        self.assertEqual(
-            set(found),
-            {"Caddyfile", "sites/gh.caddy", "sites/glab.caddy", "sites/api.caddy", "api-transport.caddy"},
-        )
+        self.assertEqual(set(found), {"Caddyfile", "sites/gh.caddy", "sites/glab.caddy"})
         self.assertIn("{env.GH_PROXY_BEARER}", found["sites/gh.caddy"])
         self.assertIn("{env.GLAB_PROXY_BEARER}", found["sites/glab.caddy"])
         self.assertIn("import /etc/caddy/sites/*.caddy", found["Caddyfile"])
 
-    def test_api_ca_transport_only_for_an_https_upstream(self):
-        with tempfile.TemporaryDirectory() as d:
-            ca = Path(d) / "ca.pem"
-            ca.write_text("x")
-            for base, staged in (("https://gw.internal/a", True), ("http://gw.internal:8000", False)):
-                with self.subTest(base=base):
-                    out = Path(d) / base.split(":")[0]
-                    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                           "ANTHROPIC_BASE_URL": base, "CLAUDE_DOCKER_API_CA": str(ca)}
-                    subprocess.run(["bash", "-c", 'source "$1"; stage_proxy_root "$2"; stage_api_proxy_site "$2"',
-                                    "_", str(RUN_SH), str(out)], env=env, check=True)
-                    self.assertEqual("tls_trust_pool" in (out / "api-transport.caddy").read_text(), staged)
-                    self.assertEqual((out / "api-ca.pem").exists(), staged)
-
-    def test_credential_lines_are_literals(self):
-        lines = re.findall(r"echo (\S.*?) >>\"\$1/api-cred\.caddy\"", RUN_SH.read_text())
-        self.assertEqual(len(lines), 4)
-        for line in lines:
-            self.assertRegex(line, r"^'[^'$]*'$", "api-cred lines must be single-quoted constants")
+    def test_the_sidecar_serves_only_the_forges(self):
+        # The sidecar proxies GitHub and GitLab only; no model-endpoint site.
+        src = RUN_SH.read_text()
+        self.assertNotIn("stage_api_proxy_site", src)
+        self.assertNotIn("api.caddy", src)
+        self.assertNotIn(":8080", src)
 
 
 def _free_port():
@@ -101,7 +82,7 @@ def _free_port():
 
 
 class _Recorder(http.server.BaseHTTPRequestHandler):
-    """Echoes method, path and headers as JSON; /stream sends paced SSE events."""
+    """Echoes method, path and headers as JSON."""
 
     protocol_version = "HTTP/1.1"
 
@@ -109,19 +90,6 @@ class _Recorder(http.server.BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         if n:
             self.rfile.read(n)
-        if self.path.endswith("/stream"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            try:
-                for i in range(3):
-                    self.wfile.write(f"data: {i}\n\n".encode())
-                    self.wfile.flush()
-                    time.sleep(0.5)
-            except (BrokenPipeError, ConnectionResetError):
-                pass  # the test hangs up after the first event
-            return
         body = json.dumps({"method": self.command, "path": self.path,
                            "headers": {k.lower(): v for k, v in self.headers.items()}}).encode()
         self.send_response(200)
@@ -138,32 +106,25 @@ class _Recorder(http.server.BaseHTTPRequestHandler):
 
 CADDY = os.environ.get("CADDY_BIN") or shutil.which("caddy")
 # CI sets this so a missing tool fails the run instead of skipping it quietly.
-REQUIRE_CADDY = os.environ.get("CLAUDE_DOCKER_TEST_REQUIRE_CADDY") == "1"
+REQUIRE_CADDY = os.environ.get("VIBE_DOCKER_TEST_REQUIRE_CADDY") == "1"
 
 
 def _missing(reason):
     if REQUIRE_CADDY:
-        raise RuntimeError(f"{reason}, and CLAUDE_DOCKER_TEST_REQUIRE_CADDY=1 forbids skipping")
+        raise RuntimeError(f"{reason}, and VIBE_DOCKER_TEST_REQUIRE_CADDY=1 forbids skipping")
     raise unittest.SkipTest(reason)
 
 
 class SidecarBehaviourTest(unittest.TestCase):
-    """glab and api sites, staged by run.sh itself, served by a real Caddy."""
+    """The glab site, staged by run.sh itself, served by a real Caddy."""
 
     @classmethod
     def setUpClass(cls):
         if not CADDY:
             _missing("no caddy binary (set CADDY_BIN or put caddy on PATH)")
-        if not shutil.which("openssl"):
-            _missing("openssl needed for the private-CA upstream")
         cls.tmp = tempfile.TemporaryDirectory()
-        t = Path(cls.tmp.name)
-        cls.pki = t / "pki"
-        cls.pki.mkdir()
-        cls._make_pki()
         cls.servers = []
-        cls.glab_up = cls._serve(tls=False)
-        cls.api_up = cls._serve(tls=True)
+        cls.glab_up = cls._serve()
 
     @classmethod
     def tearDownClass(cls):
@@ -173,63 +134,31 @@ class SidecarBehaviourTest(unittest.TestCase):
         cls.tmp.cleanup()
 
     @classmethod
-    def _make_pki(cls):
-        p = cls.pki
-        run = lambda *a: subprocess.run(a, cwd=p, check=True, capture_output=True)  # noqa: E731
-        run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key",
-            "-out", "ca.pem", "-subj", "/CN=claude-docker-test-ca", "-days", "1")
-        run("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", "srv.key",
-            "-out", "srv.csr", "-subj", "/CN=localhost")
-        (p / "ext").write_text("subjectAltName=DNS:localhost\n")
-        run("openssl", "x509", "-req", "-in", "srv.csr", "-CA", "ca.pem", "-CAkey", "ca.key",
-            "-CAcreateserial", "-out", "srv.pem", "-days", "1", "-extfile", "ext")
-
-    @classmethod
-    def _serve(cls, tls):
+    def _serve(cls):
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Recorder)
-        if tls:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            ctx.load_cert_chain(cls.pki / "srv.pem", cls.pki / "srv.key")
-            srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         cls.servers.append(srv)
-        scheme = "https://localhost" if tls else "http://127.0.0.1"
-        return f"{scheme}:{srv.server_address[1]}"
+        return f"http://127.0.0.1:{srv.server_address[1]}"
 
-    def _start(self, *, glab_policy="", api_env=None, api_ca=False):
-        """Stage via run.sh, rehome /etc/caddy and the api port, start Caddy."""
+    def _start(self, *, glab_policy=""):
+        """Stage via run.sh, rehome /etc/caddy, start Caddy."""
         work = Path(tempfile.mkdtemp(dir=self.tmp.name))
         caddy_dir = work / "caddy"
-        self.glab_port, self.api_port, http_port = _free_port(), _free_port(), _free_port()
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "CLAUDE_DOCKER_"))}
-        env.update(api_env or {"ANTHROPIC_API_KEY": "sk-real",
-                               "ANTHROPIC_BASE_URL": self.api_up + "/gw/"})
+        self.glab_port, http_port = _free_port(), _free_port()
+        env = {k: v for k, v in os.environ.items() if not k.startswith("VIBE_DOCKER_")}
         if glab_policy:
             (work / "user-policy.caddy").write_text(glab_policy)
-            env["CLAUDE_DOCKER_GLAB_POLICY"] = str(work / "user-policy.caddy")
-        if api_ca:
-            env["CLAUDE_DOCKER_API_CA"] = str(self.pki / "ca.pem")
-        script = (
-            'set -euo pipefail; source "$1"; d="$2"; stage_proxy_root "$d"; '
-            'stage_glab_proxy_site "$d"; stage_api_proxy_site "$d"; '
-            'printf "%s\\n%s\\n%s\\n%s\\n" "$API_PROXY_UPSTREAM" "$API_PROXY_PREFIX" '
-            '"${API_PROXY_KEY:-}" "${API_PROXY_BEARER:-}"'
-        )
-        out = subprocess.run(["bash", "-c", script, "_", str(RUN_SH), str(caddy_dir)],
-                             env=env, capture_output=True, text=True, check=True).stdout
-        upstream, prefix, key, bearer = out.split("\n")[:4]
+            env["VIBE_DOCKER_GLAB_POLICY"] = str(work / "user-policy.caddy")
+        script = 'set -euo pipefail; source "$1"; d="$2"; stage_proxy_root "$d"; stage_glab_proxy_site "$d"'
+        subprocess.run(["bash", "-c", script, "_", str(RUN_SH), str(caddy_dir)],
+                       env=env, capture_output=True, text=True, check=True)
         for f in caddy_dir.rglob("*"):
-            if f.is_file() and f.suffix in (".caddy", "") and f.name != "api-ca.pem":
+            if f.is_file() and f.suffix in (".caddy", ""):
                 txt = f.read_text().replace("/etc/caddy/", f"{caddy_dir}/")
-                txt = txt.replace("claude-docker-api-proxy:8080", f"claude-docker-api-proxy:{self.api_port}")
                 # The HTTP->HTTPS redirect listener defaults to :80, which an
                 # unprivileged user can't bind.
                 txt = txt.replace("\tskip_install_trust\n", f"\tskip_install_trust\n\thttp_port {http_port}\n")
                 f.write_text(txt)
-        # The sidecar image's bundle path; this host's may differ.
-        transport = caddy_dir / "api-transport.caddy"
-        transport.write_text(transport.read_text().replace(
-            "/etc/ssl/certs/ca-certificates.crt", ssl.get_default_verify_paths().cafile or "/etc/ssl/certs/ca-certificates.crt"))
         self.caddy_env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": str(work), "XDG_DATA_HOME": str(work / "data"), "XDG_CONFIG_HOME": str(work / "cfg"),
@@ -237,12 +166,7 @@ class SidecarBehaviourTest(unittest.TestCase):
             "GLAB_PROXY_UPSTREAM": self.glab_up,
             "GLAB_PROXY_BEARER": "Bearer glpat-real",
             "GLAB_PROXY_BASIC": "Basic b2F1dGgyOmdscGF0LXJlYWw=",
-            "API_PROXY_UPSTREAM": upstream, "API_PROXY_PREFIX": prefix,
         }
-        if key:
-            self.caddy_env["API_PROXY_KEY"] = key
-        if bearer:
-            self.caddy_env["API_PROXY_BEARER"] = bearer
         self.log = work / "caddy.log"
         logf = open(self.log, "w")
         self.addCleanup(logf.close)
@@ -304,21 +228,11 @@ class SidecarBehaviourTest(unittest.TestCase):
         except ValueError:
             return r.status, body
 
-    def api(self, path, headers=None, method="POST"):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.api_port}{path}", data=b"{}", method=method,
-            headers={"Host": f"claude-docker-api-proxy:{self.api_port}", **(headers or {})})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as r:
-                return r.status, json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode()
-
     # -- glab --
 
     def test_glab_injects_per_path_class_and_strips_client_credentials(self):
         self._start()
-        st, echo = self.glab("GET", "/api/v4/user", {"PRIVATE-TOKEN": "claude-docker-proxy"})
+        st, echo = self.glab("GET", "/api/v4/user", {"PRIVATE-TOKEN": "vibe-docker-proxy"})
         self.assertEqual(st, 200)
         self.assertEqual(echo["headers"].get("authorization"), "Bearer glpat-real")
         self.assertNotIn("private-token", echo["headers"])
@@ -347,7 +261,7 @@ class SidecarBehaviourTest(unittest.TestCase):
                 with self.subTest(method=method, path=path):
                     st, body = self.glab(method, path)
                     self.assertEqual(st, 403)
-                    self.assertIn("claude-docker glab-proxy policy", body)
+                    self.assertIn("vibe-docker glab-proxy policy", body)
         st, _ = self.glab("POST", "/api/v4/projects/123", {"X-HTTP-Method-Override": "DELETE"})
         self.assertEqual(st, 403)
         for path in ("/api/v4/projects/123/repository/branches/x", "/api/v4/projects/123/issues/1"):
@@ -368,7 +282,7 @@ class SidecarBehaviourTest(unittest.TestCase):
             with self.subTest(method=method, target=target):
                 st, body = self.glab(method, target)
                 self.assertEqual(st, 403)
-                self.assertIn("claude-docker glab-proxy policy", body)
+                self.assertIn("vibe-docker glab-proxy policy", body)
 
     def test_glab_default_policy_refuses_escaped_unreserved_characters(self):
         # GitLab's router decodes these, so they could hide a blocked call.
@@ -382,7 +296,7 @@ class SidecarBehaviourTest(unittest.TestCase):
             with self.subTest(method=method, path=path):
                 st, body = self.glab(method, path)
                 self.assertEqual(st, 403)
-                self.assertIn("claude-docker glab-proxy policy", body)
+                self.assertIn("vibe-docker glab-proxy policy", body)
         # Reads are not checked (GitLab's docs encode dots in file paths), nor
         # are reserved characters or the query string.
         for path in ("/api/v4/projects/g%2Fp/repository/files/a%20b.txt/raw",
@@ -398,7 +312,7 @@ class SidecarBehaviourTest(unittest.TestCase):
             with self.subTest(path=path):
                 st, body = self.glab("PUT", path)
                 self.assertEqual(st, 403)
-                self.assertIn("claude-docker glab-proxy policy", body)
+                self.assertIn("vibe-docker glab-proxy policy", body)
         self.assertEqual(self.glab("GET", "/api/v4/projects/123")[0], 200)
 
     def test_glab_default_policy_blocks_token_minting(self):
@@ -480,8 +394,8 @@ class SidecarBehaviourTest(unittest.TestCase):
             with self.subTest(method=method, path=path):
                 st, body = self.glab(method, path)
                 self.assertEqual(st, 403)
-                self.assertIn("claude-docker glab-proxy policy", body)
-                self.assertIn("CLAUDE_DOCKER_GLAB_POLICY", body)
+                self.assertIn("vibe-docker glab-proxy policy", body)
+                self.assertIn("VIBE_DOCKER_GLAB_POLICY", body)
         allowed = (
             ("GET", "/api/v4/personal_access_tokens"),
             ("GET", "/api/v4/personal_access_tokens/self"),
@@ -517,53 +431,12 @@ class SidecarBehaviourTest(unittest.TestCase):
 
     def test_glab_audit_log_has_requests_but_no_secrets(self):
         self._start()
-        self.assertEqual(self.glab("GET", "/api/v4/user", {"PRIVATE-TOKEN": "claude-docker-proxy"})[0], 200)
+        self.assertEqual(self.glab("GET", "/api/v4/user", {"PRIVATE-TOKEN": "vibe-docker-proxy"})[0], 200)
         log, entries = self.audit_log(lambda e: e["request"]["host"].startswith("gl.example.test")
                                       and e["request"]["uri"] == "/api/v4/user" and e["status"] == 200)
         self.assertTrue(all("headers" not in e["request"] for e in entries))
         self.assertNotIn("glpat-real", log)
-        self.assertNotIn("claude-docker-proxy", log)
-
-    # -- api --
-
-    def test_api_keeps_prefix_sets_host_and_replaces_the_key(self):
-        self._start(api_ca=True)
-        st, echo = self.api("/v1/messages?beta=true",
-                            {"x-api-key": "claude-docker-proxy", "Authorization": "Bearer oauth-from-volume"})
-        self.assertEqual(st, 200)
-        self.assertEqual(echo["path"], "/gw/v1/messages?beta=true")
-        self.assertEqual(echo["headers"]["host"], self.api_up.split("://")[1])
-        self.assertEqual(echo["headers"]["x-api-key"], "sk-real")
-        self.assertNotIn("authorization", echo["headers"])
-
-    def test_api_bearer_variant(self):
-        self._start(api_ca=True, api_env={"ANTHROPIC_AUTH_TOKEN": "tok-real", "ANTHROPIC_BASE_URL": self.api_up})
-        _, echo = self.api("/v1/messages", {"Authorization": "Bearer claude-docker-proxy", "x-api-key": "stray"})
-        self.assertEqual(echo["path"], "/v1/messages")
-        self.assertEqual(echo["headers"]["authorization"], "Bearer tok-real")
-        self.assertNotIn("x-api-key", echo["headers"])
-
-    def test_api_private_ca_upstream_needs_the_ca(self):
-        self._start(api_ca=False)
-        self.assertEqual(self.api("/v1/messages")[0], 502)
-
-    def test_api_streams_events_incrementally(self):
-        self._start(api_ca=True)
-        conn = http.client.HTTPConnection("127.0.0.1", self.api_port, timeout=10)
-        t0 = time.time()
-        conn.request("POST", "/stream", body="{}", headers={"Host": f"claude-docker-api-proxy:{self.api_port}"})
-        r = conn.getresponse()
-        self.addCleanup(conn.close)
-        first = r.read1(4096)
-        self.assertIn(b"data: 0", first)
-        self.assertLess(time.time() - t0, 0.5, "first event was buffered until the stream ended")
-
-    def test_api_audit_log_has_no_secrets(self):
-        self._start(api_ca=True)
-        self.assertEqual(self.api("/v1/messages", {"x-api-key": "claude-docker-proxy", "X-Custom": "custom-secret"})[0], 200)
-        log, _ = self.audit_log(lambda e: e["request"]["method"] == "POST" and e["status"] == 200)
-        for secret in ("sk-real", "custom-secret"):
-            self.assertNotIn(secret, log)
+        self.assertNotIn("vibe-docker-proxy", log)
 
 
 if __name__ == "__main__":

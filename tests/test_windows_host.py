@@ -108,7 +108,7 @@ class Harness:
             "HOME": str(self.home),
             "FAKE_UNAME": uname,
             "RECORD": str(self.record),
-            "CLAUDE_DOCKER_RUNTIME": "docker",
+            "VIBE_DOCKER_RUNTIME": "docker",
             # Windows form, as Git Bash inherits it from the Windows environment.
             "APPDATA": "W:" + str(self.appdata).replace("/", "\\"),
         }
@@ -169,7 +169,7 @@ class GitBashTest(unittest.TestCase):
         # the entrypoint writes it to the system gitconfig; no GIT_CONFIG_* env.
         env = pairs(self.start(), "-e")
         self.assertFalse([e for e in env if e.startswith("GIT_CONFIG_")])
-        self.assertIn("CLAUDE_DOCKER_TRUSTED_WORKSPACES=/workspaces/repo", env)
+        self.assertIn("VIBE_DOCKER_TRUSTED_WORKSPACES=/workspaces/repo", env)
 
     def test_overlay_carries_host_autocrlf(self):
         self.start()
@@ -220,7 +220,7 @@ class GitBashTest(unittest.TestCase):
         (self.h.appdata / "terraform.d").mkdir(parents=True)
         (self.h.appdata / "terraform.d" / "credentials.tfrc.json").write_text("x")
         mounts = pairs(self.start(), "-v")
-        self.assertFalse([m for m in mounts if "terraform.d" in m and not m.startswith("claude-code")])
+        self.assertFalse([m for m in mounts if "terraform.d" in m and not m.startswith("vibe-")])
 
 
 class OffMsysTest(unittest.TestCase):
@@ -249,10 +249,10 @@ class OffMsysTest(unittest.TestCase):
 
 
 class PowerShellLauncherTest(unittest.TestCase):
-    """claude-docker.ps1 can't run in CI (no pwsh), so pin its invariants statically."""
+    """vibe-docker.ps1 can't run in CI (no pwsh), so pin its invariants statically."""
 
     def setUp(self):
-        self.text = (ROOT / "claude-docker.ps1").read_text()
+        self.text = (ROOT / "vibe-docker.ps1").read_text()
         # Code only — the comments legitimately mention System32\bash.exe.
         self.code = "\n".join(
             line for line in self.text.splitlines() if not line.lstrip().startswith("#")
@@ -272,7 +272,7 @@ class PowerShellLauncherTest(unittest.TestCase):
 
 class GitattributesTest(unittest.TestCase):
     def test_scripts_and_pins_check_out_lf(self):
-        files = ["run.sh", "entrypoint.sh", "Dockerfile", "claude-docker.ps1"] + [
+        files = ["run.sh", "entrypoint.sh", "Dockerfile", "vibe-docker.ps1"] + [
             str(p.relative_to(ROOT)) for p in (ROOT / "pins").glob("*.env")
         ]
         out = subprocess.run(

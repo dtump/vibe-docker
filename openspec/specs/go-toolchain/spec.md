@@ -17,7 +17,8 @@ archive (`golang-go`), which tracks an older release and splits GOROOT across
 paths the upstream layout assumes are one tree.
 
 Unlike `terraform` (deliberately absent, fetched per-project by `tfenv`) and
-Python (fetched by `uv`), the Go toolchain is baked into the image: the Go
+project Python (fetched by `uv`; the CPython under `/opt/vibe` exists only to
+run `vibe` and is not on PATH), the Go toolchain is baked into the image: the Go
 distribution is a single self-contained tree with no per-project variant to
 choose, and `go` itself resolves a project's required toolchain at build time
 (see the runtime code-fetch requirement below).
@@ -31,7 +32,7 @@ choose, and `go` itself resolves a project's required toolchain at build time
 
 #### Scenario: builds on Apple Silicon
 
-- **WHEN** `docker build -t claude-code:local ~/claude-docker` runs on arm64
+- **WHEN** `docker build -t mistral-vibe:local ~/vibe-docker` runs on arm64
 - **THEN** the build succeeds
 - **AND** `go version` does not fail with an exec-format error
 
@@ -172,7 +173,7 @@ created with `-d /root`.
 
 The default PATH SHALL place `/usr/local/go/bin` ahead of every system path,
 and SHALL place both agent-writable directories that live in the persistent
-`claude-code-root` volume — `/root/.local/bin` (the `pip install --user` /
+`vibe-root` volume — `/root/.local/bin` (the `pip install --user` /
 `uv tool install` prefix) and `/root/go/bin` (the GOPATH `bin` directory, where
 `go install` writes) — after every system path.
 

@@ -1,6 +1,6 @@
 # Contributing
 
-Contributions to `claude-docker` are welcome from anyone.
+Contributions to `vibe-docker` are welcome from anyone. It is a fork of [schubergphilis/claude-docker](https://github.com/schubergphilis/claude-docker); a fix that applies to both belongs upstream first.
 
 ## Workflow
 
@@ -60,7 +60,7 @@ CI runs these on every PR; running them locally first is faster:
 
 ```bash
 # Lint shell scripts and the Dockerfile
-shellcheck run.sh entrypoint.sh tests/*/*.sh scripts/*.sh
+shellcheck --severity=warning run.sh entrypoint.sh tests/*/*.sh scripts/*.sh
 hadolint --config .hadolint.yaml Dockerfile
 
 # Unit tests for the pin tooling
@@ -70,8 +70,8 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 bats tests/bats
 
 # Build the image and run a smoke cell against it
-docker build -t claude-code:local .
-IMAGE=claude-code:local bash tests/smoke/smoke.sh --uid="$(id -u)" --optins=aws,glab,tfe,api,az
+docker build -t mistral-vibe:local .
+IMAGE=mistral-vibe:local bash tests/smoke/smoke.sh --uid="$(id -u)" --optins=aws,glab,tfe,mistral,az
 ```
 
 See [`docs/`](docs/) for the reference material: the [threat

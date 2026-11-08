@@ -40,7 +40,7 @@ ARG TASK_VERSION=3.53.1
 # fragment, so `docker build .` is reproducible from the committed lockfile with
 # no --build-arg. Refresh them with uv run scripts/update_pins.py (see
 # docs/maintenance.md): it selects the newest stable version already past its
-# soak window (7 days; 1 day for claude-code) and recomputes the hashes. The
+# soak window (7 days) and recomputes the hashes. The
 # soak policy that used to be hand-applied here now lives in that script. To
 # override a single tool: uv run scripts/update_pins.py --pin <tool>=<version>.
 
@@ -58,7 +58,7 @@ RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/10no-sandbox \
 
 # Free UID/GID 1000. Ubuntu's base image ships a default `ubuntu` user at
 # 1000:1000 — i.e. exactly the typical host UID. The entrypoint creates a
-# fresh `claude` user mapped to HOST_UID (useradd -o tolerates a duplicate
+# fresh `vibe` user mapped to HOST_UID (useradd -o tolerates a duplicate
 # UID); without this step getpwuid(1000) would still resolve to `ubuntu`
 # first and GID 1000 would be named `ubuntu`. Reusing the baked-in
 # `ubuntu` account would also silently inherit its supplementary
@@ -72,8 +72,8 @@ RUN if getent passwd ubuntu >/dev/null; then userdel -r ubuntu; fi \
 # owns it (`dpkg -S` finds nothing; its embedded Go module paths are all
 # github.com/canonical/pebble/...), so there is nothing for `apt-get purge`
 # to remove. It's inert here: no systemd unit or init hook references it,
-# the base image's own Cmd is plain /bin/bash, and claude-docker sets its
-# own tini + runuser + claude entrypoint regardless. Its statically-linked
+# the base image's own Cmd is plain /bin/bash, and vibe-docker sets its
+# own runuser + vibe entrypoint regardless. Its statically-linked
 # stdlib is the source of all 8 pebble findings; removal is the only fix
 # since no rebuild against a patched stdlib exists yet.
 RUN ! dpkg -S /usr/bin/pebble >/dev/null 2>&1 && rm -f /usr/bin/pebble
@@ -95,10 +95,15 @@ RUN ! dpkg -S /usr/bin/pebble >/dev/null 2>&1 && rm -f /usr/bin/pebble
 # libbrotli1 (curl's brotli) is named for CVE-2026-111497, fixed in
 # 1.2.0-3ubuntu0.1. Same stale-cache pattern: a fresh build gets the fix, CI's
 # gha cache served 1.2.0-3build1. Drop at the next base-image bump.
+# apt and libapt-pkg7.0 are named for CVE-2026-109518, fixed in
+# 3.2.1ubuntu0.1; the base image ships 3.2.0. Drop at the next base-image bump.
+# Every curl download below retries: GitHub's release downloads returned 504
+# intermittently on 2026-11-08 and failed the CI build on the first try, and
+# the pinned sha256 still decides whether what finally arrived is accepted.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg \
  && install -d -m 0755 /etc/apt/keyrings \
- && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
  && chmod go+r /etc/apt/keyrings/nodesource.gpg \
  && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" \
@@ -112,6 +117,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libcurl4t64 \
       libcurl3t64-gnutls \
       libbrotli1 \
+      apt \
+      libapt-pkg7.0 \
       git \
       git-lfs \
       tmux \
@@ -125,7 +132,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # GitHub CLI (keyring fetched at build; TODO: commit the keyring to the repo)
 RUN install -d -m 0755 /etc/apt/keyrings \
- && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -145,7 +152,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 # next upstream release the way pinning against Ubuntu's own archive would.
 RUN . /etc/os-release \
  && install -d -m 0755 /etc/apt/keyrings \
- && curl -fsSL https://dl.cloudsmith.io/public/task/task/gpg.046FD1186CA342F0.key \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 https://dl.cloudsmith.io/public/task/task/gpg.046FD1186CA342F0.key \
       | gpg --dearmor -o /etc/apt/keyrings/task-archive-keyring.gpg \
  && chmod go+r /etc/apt/keyrings/task-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/task-archive-keyring.gpg] https://dl.cloudsmith.io/public/task/task/deb/ubuntu ${VERSION_CODENAME} main" \
@@ -166,7 +173,7 @@ RUN . /tmp/glab.env; set -e; ARCH=$(dpkg --print-architecture); \
       arm64) URL="${GLAB_DEB_URL_ARM64}"; SHA="${GLAB_DEB_SHA256_ARM64}" ;; \
       *) echo "Unsupported arch for glab: $ARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "$URL" -o /tmp/glab.deb \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$URL" -o /tmp/glab.deb \
  && echo "${SHA}  /tmp/glab.deb" | sha256sum -c - \
  && apt-get install -y --no-install-recommends /tmp/glab.deb \
  && rm /tmp/glab.deb /tmp/glab.env
@@ -181,7 +188,7 @@ RUN . /tmp/awscli.env; set -e; ARCH=$(uname -m); \
       aarch64) URL="${AWSCLI_URL_AARCH64}"; SHA="${AWSCLI_SHA256_AARCH64}" ;; \
       *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "$URL" -o /tmp/awscli.zip \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$URL" -o /tmp/awscli.zip \
  && echo "${SHA}  /tmp/awscli.zip" | sha256sum -c - \
  && unzip -q /tmp/awscli.zip -d /tmp \
  && /tmp/aws/install \
@@ -200,7 +207,7 @@ RUN . /tmp/uv.env; set -e; ARCH=$(uname -m); \
       aarch64) URL="${UV_URL_AARCH64}"; SHA="${UV_SHA256_AARCH64}" ;; \
       *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "$URL" -o /tmp/uv.tar.gz \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$URL" -o /tmp/uv.tar.gz \
  && echo "${SHA}  /tmp/uv.tar.gz" | sha256sum -c - \
  && mkdir -p /tmp/uv \
  && tar -xzf /tmp/uv.tar.gz -C /tmp/uv \
@@ -225,9 +232,9 @@ RUN . /tmp/uv.env; set -e; ARCH=$(uname -m); \
 #     (.arch=="amd64" or .arch=="arm64")) | "  " + .arch + " " + .sha256)'
 # Confirm a bump the way these two hashes were produced: download both tarballs
 # and sha256sum them locally rather than trusting the JSON's advertised digest.
-# Placed before the npm layers on purpose — the tarball is ~64 MB and Go moves far
-# less often than the claude-code pin, so a weekly claude-code bump does not
-# re-download it.
+# Placed before the vibe and npm layers on purpose — the tarball is ~64 MB and Go
+# moves far less often than the vibe pin, so a vibe bump does not re-download
+# it.
 # api/ (the stdlib API compatibility lists for Go's own release checks), test/
 # (the compiler's regression suite) and every src/**/testdata are only read by
 # tests of Go itself, never by building or testing user code, so they go.
@@ -240,7 +247,7 @@ RUN ARCH=$(dpkg --print-architecture); \
       arm64) SHA="${GO_SHA256_ARM64}" ;; \
       *) echo "Unsupported arch for go: $ARCH" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz \
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz \
  && echo "${SHA}  /tmp/go.tar.gz" | sha256sum -c - \
  && tar -C /usr/local -xzf /tmp/go.tar.gz \
  && rm /tmp/go.tar.gz \
@@ -260,7 +267,7 @@ RUN ARCH=$(dpkg --print-architecture); \
 # wrapper forces telemetry off (not relying on bypassing azure-cli's __main__),
 # points requests at the system store instead of certifi so a --az private CA
 # is trusted, and maps AZURE_DEVOPS_ORG_URL onto the extension's default org.
-# Before the npm layers: az moves monthly, claude-code near-daily.
+# Before the vibe and npm layers: az moves monthly, vibe weekly or faster.
 COPY pins/az.env pins/azure-devops.env pins/az-requirements.txt /tmp/
 # SC2016: the single-quoted $… lines are the az wrapper's own text, written
 # literally into /usr/local/bin/az and expanded when az runs, not at build time.
@@ -268,7 +275,7 @@ COPY pins/az.env pins/azure-devops.env pins/az-requirements.txt /tmp/
 RUN . /tmp/az.env && . /tmp/azure-devops.env \
  && grep -q "^azure-cli-core==${AZ_VERSION} " /tmp/az-requirements.txt \
  && whl="/tmp/${AZURE_DEVOPS_URL##*/}" \
- && curl -fsSL "$AZURE_DEVOPS_URL" -o "$whl" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$AZURE_DEVOPS_URL" -o "$whl" \
  && echo "${AZURE_DEVOPS_SHA256}  ${whl}" | sha256sum -c - \
  && UV_PYTHON_INSTALL_DIR=/opt/az/python uv venv --no-cache --managed-python --python 3.13 /opt/az/venv \
  && rm -rf /opt/az/python/cpython-*/bin/pip* /opt/az/python/cpython-*/lib/python3*/site-packages/pip* \
@@ -294,6 +301,61 @@ RUN . /tmp/az.env && . /tmp/azure-devops.env \
  && AZURE_CONFIG_DIR=/tmp/azcfg az devops -h > /dev/null \
  && rm -rf "$whl" /tmp/azcfg /tmp/az.env /tmp/azure-devops.env /tmp/az-requirements.txt
 
+# Mistral Vibe — installed like az above: the PyPI package mistral-vibe and
+# every transitive dep from pins/vibe-requirements.txt (--require-hashes), the
+# lock update_pins.py writes with pins/vibe.env; the build fails if they
+# disagree. --generate-hashes records every published wheel of each pinned
+# version, so the one lock installs on amd64 and arm64 (both have
+# manylinux_2_28 wheels). --no-build makes a missing wheel fail the build
+# instead of compiling an sdist the lock also hashes.
+# Its own uv-managed CPython 3.13 under /opt/vibe, not az's: vibe needs a GIL
+# build (uv's cpython-3.13 is one; asserted below), and two venvs keep an az
+# bump and a vibe bump from rebuilding each other. Neither is on PATH. pip,
+# ensurepip and the Tcl/Tk stack are deleted for the same reasons as for az.
+# `vibe` is a small Python launcher that execs the bundled Rust TUI
+# (vibe/_bin/vibe-rs) and hands it the path of `vibe-app-server`, found next to
+# Path(sys.argv[0]).resolve(). So /usr/local/bin gets symlinks into the venv's
+# bin, never wrapper scripts: a copied or wrapping script would resolve to
+# /usr/local/bin and the TUI would not find its app server. The console
+# scripts' shebangs gain -I instead, which keeps PYTHONPATH and friends out of
+# vibe the way az's wrapper does (a venv already ignores the volume-backed user
+# site); `|| exit 1` because errexit does not reach inside a loop that sits in
+# an && chain. The build asserts that vibe-rs is a native binary and that
+# `vibe --version` reports the pin; HOME points at a throwaway dir so nothing is
+# left under /root (spelled `env HOME=…` so dockle reads the key as HOME, which
+# docker.yml accepts, not `$(HOME`).
+# Before the npm layers: npm, openspec and pnpm bumps then leave this ~420 MB
+# layer cached.
+COPY pins/vibe.env pins/vibe-requirements.txt /tmp/
+RUN . /tmp/vibe.env \
+ && grep -q "^mistral-vibe==${VIBE_VERSION} " /tmp/vibe-requirements.txt \
+ && UV_PYTHON_INSTALL_DIR=/opt/vibe/python uv venv --no-cache --managed-python --python 3.13 /opt/vibe/venv \
+ && rm -rf /opt/vibe/python/cpython-*/bin/pip* /opt/vibe/python/cpython-*/lib/python3*/site-packages/pip* \
+ && rm -rf /opt/vibe/python/cpython-*/lib/libtcl* /opt/vibe/python/cpython-*/lib/libtk* \
+      /opt/vibe/python/cpython-*/lib/tcl9* /opt/vibe/python/cpython-*/lib/tk9* \
+      /opt/vibe/python/cpython-*/lib/itcl* /opt/vibe/python/cpython-*/lib/thread* \
+      /opt/vibe/python/cpython-*/lib/python3*/tkinter /opt/vibe/python/cpython-*/lib/python3*/idlelib \
+      /opt/vibe/python/cpython-*/lib/python3*/turtledemo /opt/vibe/python/cpython-*/lib/python3*/turtle.py \
+      /opt/vibe/python/cpython-*/lib/python3*/lib-dynload/_tkinter.* \
+      /opt/vibe/python/cpython-*/lib/python3*/ensurepip \
+ && ! /opt/vibe/venv/bin/python -I -c 'import tkinter' 2>/dev/null \
+ && /opt/vibe/venv/bin/python -I -c 'import sys; sys.exit(not sys._is_gil_enabled())' \
+ && uv pip install --no-cache --no-build --python /opt/vibe/venv/bin/python \
+      --require-hashes -r /tmp/vibe-requirements.txt \
+ && for s in vibe vibe-acp vibe-app-server; do \
+      sed -i '1s|^#!/opt/vibe/venv/bin/python$|#!/opt/vibe/venv/bin/python -I|' "/opt/vibe/venv/bin/$s" \
+      && [ "$(head -n1 "/opt/vibe/venv/bin/$s")" = '#!/opt/vibe/venv/bin/python -I' ] || exit 1; \
+    done \
+ && ln -s /opt/vibe/venv/bin/vibe /usr/local/bin/vibe \
+ && ln -s /opt/vibe/venv/bin/vibe-acp /usr/local/bin/vibe-acp \
+ && magic=$(od -An -tx1 -N4 /opt/vibe/venv/lib/python3.13/site-packages/vibe/_bin/vibe-rs | tr -d ' \n') \
+ && if [ "$magic" != "7f454c46" ]; then \
+      echo "mistral-vibe ${VIBE_VERSION}: vibe/_bin/vibe-rs is not a native binary (magic ${magic})." >&2; \
+      exit 1; \
+    fi \
+ && [ "$(env HOME=/tmp/vibehome vibe --version)" = "vibe ${VIBE_VERSION}" ] \
+ && rm -rf /tmp/vibehome /tmp/vibe.env /tmp/vibe-requirements.txt
+
 # npm itself, replacing the one NodeSource bundles with nodejs. npm vendors its
 # dependencies (undici, brace-expansion, tar, …), so their CVEs are cleared only
 # by a newer npm release; pinning it in pins/npm.env lets the weekly refresh bump
@@ -308,15 +370,11 @@ RUN . /tmp/npm.env \
 # npm-backed CLIs — pinned versions. Trust = npm's signed dist.integrity;
 # run `npm audit signatures <pkg>@<ver>` when bumping.
 # --ignore-scripts blocks lifecycle hooks for every package + transitive dep
-# (hard security boundary, kept on). Exactly two packages are unusable without
-# their own install script, so we invoke those two by hand — named here, each
+# (hard security boundary, kept on). Exactly one package is unusable without
+# its own install script, so we invoke that one by hand — named here,
 # platform-detect + file moves only, no network/exec, re-read on each bump.
 # Nothing else, and no transitive dep, ever gets a script run.
-#  1. claude-code 2.1.x ships its real binary in a per-arch optional-dep
-#     package; the launcher's postinstall (install.cjs) copies it over
-#     bin/claude.exe. Without it `claude` is a stub that errors at exec.
-#     Audit-verified for 2.1.131.
-#  2. pnpm 12.x ships bin.pnpm as a shebang-less placeholder; install.js
+#  - pnpm 12.x ships bin.pnpm as a shebang-less placeholder; install.js
 #     hard-links the platform binary from the @pnpm/exe.linux-* optional dep
 #     over it (copyFileSync fallback if the link fails). Its only spawnSync is
 #     inside relinkNpmWindowsShims(), which returns unless platform is win32.
@@ -333,17 +391,14 @@ RUN . /tmp/npm.env \
 # `npm root -g` over a hardcoded path so we don't break on a different prefix.
 # npm tools carry version-only pins (no sha256): npm install verifies the
 # registry-advertised dist.integrity (registry-integrity, not provenance; CI
-# runs `npm audit signatures`). All three share this layer, so they share a COPY.
+# runs `npm audit signatures`). Both share this layer, so they share a COPY.
 # Both npm layers end with `npm cache clean --force`: npm keeps every tarball it
-# fetched under /root/.npm/_cacache, about 200 MB here (the claude-code
-# platform package alone is 110 MB), which nothing in the image reads again.
-COPY pins/claude-code.env pins/openspec.env pins/pnpm.env /tmp/
-RUN . /tmp/claude-code.env && . /tmp/openspec.env && . /tmp/pnpm.env \
+# fetched under /root/.npm/_cacache, which nothing in the image reads again.
+COPY pins/openspec.env pins/pnpm.env /tmp/
+RUN . /tmp/openspec.env && . /tmp/pnpm.env \
  && npm install -g --ignore-scripts \
-      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@fission-ai/openspec@${OPENSPEC_VERSION}" \
       "pnpm@${PNPM_VERSION}" \
- && node "$(npm root -g)/@anthropic-ai/claude-code/install.cjs" \
  && node "$(npm root -g)/pnpm/install.js" \
  && magic=$(od -An -tx1 -N4 "$(npm root -g)/pnpm/pnpm" | tr -d ' \n') \
  && if [ "$magic" != "7f454c46" ]; then \
@@ -352,7 +407,7 @@ RUN . /tmp/claude-code.env && . /tmp/openspec.env && . /tmp/pnpm.env \
       exit 1; \
     fi \
  && npm cache clean --force \
- && rm /tmp/claude-code.env /tmp/openspec.env /tmp/pnpm.env
+ && rm /tmp/openspec.env /tmp/pnpm.env
 
 # tfenv — pure-bash terraform version manager. Arch-independent (just
 # bash scripts), so a single sha256 covers amd64 and arm64. We deliberately
@@ -360,13 +415,13 @@ RUN . /tmp/claude-code.env && . /tmp/openspec.env && . /tmp/pnpm.env \
 # interactive `tfenv install <v>`) fetches the right version from
 # releases.hashicorp.com at runtime, in the same runtime-fetch class as
 # `pnpm dlx`/`uvx`. Installed under /opt (not /root) so image-level
-# version bumps aren't shadowed by the claude-code-root named volume.
-# Placed after the heavier npm install so a tfenv version bump doesn't
-# invalidate that layer's cache (tfenv pins move far less often than the
-# claude-code/openspec/pnpm pins above).
+# version bumps aren't shadowed by the vibe-root named volume.
+# Placed after the heavier vibe and npm installs so a tfenv version bump
+# doesn't invalidate their cache (tfenv pins move far less often than the
+# vibe/openspec/pnpm pins above).
 COPY pins/tfenv.env /tmp/tfenv.env
 RUN . /tmp/tfenv.env \
- && curl -fsSL "$TFENV_URL" -o /tmp/tfenv.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 "$TFENV_URL" -o /tmp/tfenv.tar.gz \
  && echo "${TFENV_SHA256}  /tmp/tfenv.tar.gz" | sha256sum -c - \
  && mkdir -p /opt/tfenv \
  && tar -xzf /tmp/tfenv.tar.gz -C /opt/tfenv --strip-components=1 \
@@ -374,14 +429,15 @@ RUN . /tmp/tfenv.env \
  && ln -s /opt/tfenv/bin/terraform /usr/local/bin/terraform \
  && rm /tmp/tfenv.tar.gz /tmp/tfenv.env
 
-# Plain `tmux` mode swallows Shift+Enter so Claude's prompt sees only Enter,
-# forcing users to type `\` for a literal newline. `always` is required
-# (not `on`) because Claude does not send the kitty activation request that
-# `on` waits for — see claude-code#26629. /etc/tmux.conf, not
-# /root/.tmux.conf, because /root is masked by the claude-code-root named
+# Vibe's TUI inserts a newline on Shift+Enter (or Alt+Enter) only when the
+# terminal reports those as distinct keys; plain `tmux` mode swallows the
+# modifier, so the prompt sees only Enter and submits, leaving Ctrl+J as the
+# only newline. `always` (not `on`) makes tmux send extended keys without
+# waiting for the application to request them. /etc/tmux.conf, not
+# /root/.tmux.conf, because /root is masked by the vibe-root named
 # volume at runtime. Harmless under tmux -CC: iTerm2 control mode bypasses
-# tmux's input layer. Placed after npm install so edits don't invalidate
-# the heavy AWS CLI / uv / glab / npm download layers above.
+# tmux's input layer. Placed after the installs so edits don't invalidate
+# the heavy AWS CLI / uv / glab / vibe / npm download layers above.
 RUN cat > /etc/tmux.conf <<'EOF'
 set -s extended-keys always
 set -as terminal-features "*:extkeys"
@@ -410,9 +466,16 @@ ENV GOBIN=/root/go/bin \
     GOPATH=/root/go \
     GOROOT=/usr/local/go
 
-# DISABLE_AUTOUPDATER=1 keeps the pinned CLAUDE_CODE_VERSION authoritative —
-# without it, claude auto-replaces itself at runtime, defeating the
-# --ignore-scripts supply-chain pinning above. Bump the image to upgrade.
+# VIBE_ENABLE_UPDATE_CHECKS=false and VIBE_ENABLE_AUTO_UPDATE=false keep the
+# pinned VIBE_VERSION authoritative: vibe otherwise checks PyPI daily and offers
+# to upgrade itself, which would replace the hash-locked install above (and,
+# as the dropped user, fail on the root-owned venv). Bump the image to
+# upgrade. VIBE_* environment variables outrank ~/.vibe/config.toml and a
+# workspace's .vibe/config.toml, so neither can switch these back on.
+# VIBE_ENABLE_SYSTEM_TRUST_STORE=true makes vibe's HTTPS client trust the OS
+# store (/etc/ssl/certs), where the entrypoint installs the gh/glab auth-proxy
+# CA and a --az private CA with update-ca-certificates; with the default, only
+# certifi's bundle is trusted.
 # No TASK_X_REMOTE_TASKFILES here: go-task's `includes:` from a remote URL left
 # experimental in 3.53.1, so the feature is on by default and setting the opt-in
 # makes every `task` invocation warn that the experiment is released. It stays a
@@ -422,21 +485,21 @@ ENV GOBIN=/root/go/bin \
 # toolchain, ahead of the system paths so the image's pinned Go wins.
 # /root/.local/bin (the pip --user / `uv tool install` prefix) and /root/go/bin
 # (the GOPATH default, where `go install` writes) are appended LAST on purpose:
-# both live in the persistent claude-code-root volume and are writable by the
+# both live in the persistent vibe-root volume and are writable by the
 # session, so a binary one session drops there must never be able to shadow a
 # system binary (git, gh, aws, …) on a later run. Tools installed into either
 # stay runnable by name; only deliberate overrides are given up. This covers
 # binary shadowing only — rc/config files on the same volume still carry a
 # compromise into later sessions (docs/security.md "Threat model").
-ENV CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 \
-    DISABLE_AUTOUPDATER=1 \
-    IS_SANDBOX=1 \
-    LANG=C.UTF-8 \
+ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    PATH="/usr/local/go/bin:${PATH}:/root/.local/bin:/root/go/bin"
+    PATH="/usr/local/go/bin:${PATH}:/root/.local/bin:/root/go/bin" \
+    VIBE_ENABLE_AUTO_UPDATE=false \
+    VIBE_ENABLE_SYSTEM_TRUST_STORE=true \
+    VIBE_ENABLE_UPDATE_CHECKS=false
 
 # Container starts as root so the entrypoint can chown /root to the host
-# UID, then drops privileges via runuser. Steady-state, claude runs as the
+# UID, then drops privileges via runuser. Steady-state, vibe runs as the
 # host user with no effective / permitted / ambient capabilities — the
 # kernel clears those on the UID→non-zero transition; the bounding set
 # retains the setup caps but is inert under `no-new-privileges`. Do not
@@ -449,4 +512,4 @@ WORKDIR /workspaces
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["claude"]
+CMD ["vibe"]

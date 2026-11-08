@@ -43,7 +43,7 @@ jobs:
         with:
           context: .
           load: true
-          tags: claude-docker:ci
+          tags: vibe-docker:ci
           platforms: linux/amd64
           # cache-from with NO cache-to, on purpose — do not "fix" this by
           # copying ci.yml's `cache-to: type=gha,mode=min` across. This run
@@ -72,7 +72,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
-          scan-ref: claude-docker:ci
+          scan-ref: vibe-docker:ci
           severity: HIGH,CRITICAL
           scanners: vuln
           exit-code: 0
@@ -85,7 +85,7 @@ jobs:
           skip-setup-trivy: true
           cache: false
           scan-type: image
-          scan-ref: claude-docker:ci
+          scan-ref: vibe-docker:ci
           severity: HIGH,CRITICAL
           scanners: vuln
           ignore-unfixed: true
@@ -97,7 +97,7 @@ jobs:
       - name: Vulnerability scan (grype) — image, HIGH/CRITICAL incl. unfixed (gate)
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
-          image: claude-docker:ci
+          image: vibe-docker:ci
           config: .grype.yaml
           severity-cutoff: high
           only-fixed: false

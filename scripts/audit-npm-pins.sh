@@ -5,7 +5,7 @@
 # npm-pinned tools supply-chain audit, run from the repo root by ci.yml's
 # `validate` job. For EVERY npm-pinned tool enforce two policies: (1) tarball
 # signed by npm's keyring over dist.integrity (`npm audit signatures`), (2) soak
-# since publish (per-tool window: 7 days, 1 day for claude-code) so loud
+# since publish (per-tool window, 7 days for each today) so loud
 # supply-chain attacks get yanked before we ingest. The soak gate is enforced
 # by update_pins.py --audit, which is the single source of truth for soak logic
 # (including each tool's window). The tool list is the kind == npm rows of

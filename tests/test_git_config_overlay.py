@@ -49,7 +49,7 @@ class GitConfigOverlayTest(unittest.TestCase):
         env = {
             "HOME": str(self.home),
             "PATH": f"{self.bin}:{os.environ['PATH']}",
-            "CLAUDE_DOCKER_RUNTIME": "docker",
+            "VIBE_DOCKER_RUNTIME": "docker",
             "ARGV_OUT": str(argv_out),
         }
         subprocess.run(["bash", str(RUN_SH), str(ws)], env=env, check=True,

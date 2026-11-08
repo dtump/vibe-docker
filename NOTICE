@@ -1,11 +1,13 @@
-claude-docker
+vibe-docker
 Copyright 2026 Schuberg Philis
+
+vibe-docker is a fork of claude-docker (https://github.com/schubergphilis/claude-docker),
+maintained by Dick Tump.
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
-claude-docker builds a container image that installs and runs third-party
+vibe-docker builds a container image that installs and runs third-party
 software which is downloaded at build or run time and remains under its own
-license. Notable components include Anthropic's Claude Code and the CLIs
-gh, glab, aws-cli, openspec, uv, pnpm, tfenv, and git-lfs. Anthropic, Claude,
-and Claude Code are trademarks of Anthropic, PBC; this project is not
-affiliated with or endorsed by Anthropic.
+license. Notable components include Mistral AI's Mistral Vibe (Apache-2.0) and
+the CLIs gh, glab, aws-cli, az, openspec, uv, pnpm, tfenv, and git-lfs. This
+project is not affiliated with or endorsed by Mistral AI.

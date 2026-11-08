@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Schuberg Philis
+#
+# Example ~/.vibe/config.docker.toml for vibe-docker. When this file exists in
+# your Vibe config dir (~/.vibe, or the --vibe-dir / VIBE_DOCKER_CONFIG_DIR
+# target), the wrapper copies it to /root/.vibe/config.toml at every container
+# start. Changes you make in a session (/config, /theme, /model) last for that
+# run only; the next start re-seeds from this file. Any key from Vibe's own
+# config.toml works here. The image already sets VIBE_ENABLE_UPDATE_CHECKS,
+# VIBE_ENABLE_AUTO_UPDATE and VIBE_ENABLE_SYSTEM_TRUST_STORE, and those
+# environment variables win over this file, so there is no point setting them.
+
+# Mistral's dark palette. "auto" (Vibe's default) follows the terminal's
+# appearance; "mistral-light" is the light variant.
+theme = "mistral-dark"
+
+# Agent profile when no --agent is passed. "ask" approves nothing by itself,
+# which suits a container you leave alone with your repos; Vibe's default is
+# "accept-edits" (file edits go through, everything else asks). vibe-docker's
+# --yolo overrides this for one session with --auto-approve.
+default_agent = "ask"
+
+# Don't send usage telemetry or crash reports to Mistral.
+enable_telemetry = false
+
+# Vibe notifies through your terminal (a bell or a terminal notification when
+# it needs you); these pass through the container. Off, for a quiet terminal.
+enable_notifications = false
+
+[session_logging]
+# Keep session logs in ~/.vibe/logs/session (the vibe-home volume). This is
+# Vibe's default; -- --resume and -- --continue need it.
+enabled = true

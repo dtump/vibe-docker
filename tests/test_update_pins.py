@@ -214,7 +214,6 @@ class TestRedirectAuthStrip(unittest.TestCase):
 SENTINEL = "9.8.7"
 VERSION_OUTPUT_SAMPLES = {
     "npm": SENTINEL,
-    "claude-code": f"{SENTINEL} (Claude Code)",
     "openspec": SENTINEL,
     "pnpm": SENTINEL,
     "uv": f"uv {SENTINEL} (aarch64-unknown-linux-gnu)",
@@ -225,6 +224,7 @@ VERSION_OUTPUT_SAMPLES = {
     # of it (the CI stub replays one line per tool).
     "az": f"azure-cli                         {SENTINEL} *",
     "azure-devops": f"azure-devops                       {SENTINEL}",
+    "vibe": f"vibe {SENTINEL}",
 }
 
 # Constructs Python's re accepts but bash's [[ =~ ]] does not. A rule using one
@@ -451,62 +451,147 @@ class TestAudit(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("no pinned version", err_buf.getvalue())
 
-    def _audit_with_claude_code_age(self, age_days, soak_days):
-        """claude-code pinned `age_days` old, every other npm tool 20d old."""
+    def _audit_with_short_window(self, age_days, soak_days):
+        """openspec given a 1-day window of its own and pinned `age_days` old,
+        every other npm tool 20d old. No tool sets its own window today, so
+        the registry is patched to keep the per-tool path under test."""
+        tools = [t._replace(soak_days=1) if t.name == "openspec" else t for t in up.TOOLS]
+
         def fake_candidates(kind, ref):
-            name = next(t.name for t in up.TOOLS if t.ref == ref and t.kind == "npm")
-            age = age_days if name == "claude-code" else 20
+            name = next(t.name for t in tools if t.ref == ref and t.kind == "npm")
+            age = age_days if name == "openspec" else 20
             return self._build_cand(up.read_current(name), age)
 
-        with unittest.mock.patch.object(up, "candidates", side_effect=fake_candidates), \
+        with unittest.mock.patch.object(up, "TOOLS", tools), \
+             unittest.mock.patch.object(up, "candidates", side_effect=fake_candidates), \
              unittest.mock.patch.object(up, "now_utc", return_value=self.NOW), \
              contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             return up.run_audit(soak_days)
 
-    def test_default_uses_claude_code_one_day_window(self):
-        """Without --soak, a 2-day-old claude-code pin passes the gate."""
-        self.assertEqual(self._audit_with_claude_code_age(2, None), 0)
+    def test_default_uses_each_tools_own_window(self):
+        """Without --soak, a 2-day-old pin passes a tool's own 1-day window."""
+        self.assertEqual(self._audit_with_short_window(2, None), 0)
 
-    def test_explicit_soak_overrides_claude_code_window(self):
-        """--soak 7 applies to claude-code too, so a 2-day-old pin fails."""
-        self.assertNotEqual(self._audit_with_claude_code_age(2, 7), 0)
+    def test_explicit_soak_overrides_a_tools_own_window(self):
+        """--soak 7 applies to that tool too, so a 2-day-old pin fails."""
+        self.assertNotEqual(self._audit_with_short_window(2, 7), 0)
 
 
 class TestPerToolSoak(unittest.TestCase):
     """Per-tool soak defaults and the --soak run-wide override."""
 
+    ONE_DAY = up.Tool("x", "npm", "x", "x --version", r"^([^ ]+)$", soak_days=1)
+
     def _tool(self, name):
         return next(t for t in up.TOOLS if t.name == name)
 
-    def test_claude_code_soaks_one_day(self):
-        self.assertEqual(self._tool("claude-code").soak_days, 1)
-
-    def test_other_tools_keep_default(self):
+    def test_every_tool_keeps_the_default(self):
         for t in up.TOOLS:
-            if t.name != "claude-code":
-                self.assertEqual(t.soak_days, up.DEFAULT_SOAK_DAYS, t.name)
+            self.assertEqual(t.soak_days, up.DEFAULT_SOAK_DAYS, t.name)
+
+    def test_vibe_soaks_the_default_window(self):
+        self.assertEqual(up.soak_days_for(self._tool("vibe"), None), up.DEFAULT_SOAK_DAYS)
 
     def test_soak_days_for_without_override(self):
-        self.assertEqual(up.soak_days_for(self._tool("claude-code"), None), 1)
+        self.assertEqual(up.soak_days_for(self.ONE_DAY, None), 1)
         self.assertEqual(up.soak_days_for(self._tool("uv"), None), up.DEFAULT_SOAK_DAYS)
 
     def test_soak_days_for_with_override(self):
-        self.assertEqual(up.soak_days_for(self._tool("claude-code"), 14), 14)
+        self.assertEqual(up.soak_days_for(self.ONE_DAY, 14), 14)
         self.assertEqual(up.soak_days_for(self._tool("uv"), 0), 0)
 
     def test_soak_flag_defaults_to_none(self):
         args, _ = up.parse_args([])
         self.assertIsNone(args.soak)
 
-    def test_claude_code_30h_old_release_selected(self):
-        """Spec scenario: a 30-hour-old claude-code release clears its window."""
+    def test_a_30h_old_release_clears_a_one_day_window(self):
         now = datetime(2026, 6, 1, tzinfo=timezone.utc)
         cand = [("2.1.10", (now - timedelta(days=5)).isoformat()),
                 ("2.1.11", (now - timedelta(hours=30)).isoformat())]
-        soak = timedelta(days=up.soak_days_for(self._tool("claude-code"), None))
+        soak = timedelta(days=up.soak_days_for(self.ONE_DAY, None))
         r = up.select_version(cand, "2.1.10", soak, now)
         self.assertEqual(r.version, "2.1.11")
+
+
+class TestLocks(unittest.TestCase):
+    """The hash-locked requirements files written next to the PyPI-backed
+    tools' fragments. uv is stubbed: no network, no uv on PATH needed."""
+
+    @staticmethod
+    def _fake_compile(argv, input, text, check):
+        out = Path(argv[argv.index("-o") + 1])
+        out.write_text("".join(f"{r} \\\n    --hash=sha256:00\n" for r in input.split()))
+        return subprocess.CompletedProcess(argv, 0)
+
+    def _write(self, name, version):
+        with tempfile.TemporaryDirectory() as tmp, \
+             unittest.mock.patch.object(up.subprocess, "run", side_effect=self._fake_compile) as run:
+            stage = Path(tmp)
+            up.write_fragment(stage, name, version)
+            files = {p.name: p.read_text() for p in stage.iterdir()}
+        return files, run
+
+    def test_every_pypi_tool_has_a_lock(self):
+        self.assertEqual(sorted(up.LOCKS), sorted(t.name for t in up.TOOLS if t.kind == "pypi"))
+
+    def test_vibe_writes_its_fragment_and_lock(self):
+        files, run = self._write("vibe", "9.8.7")
+        self.assertEqual(sorted(files), ["vibe-requirements.txt", "vibe.env"])
+        self.assertIn("VIBE_VERSION=9.8.7\n", files["vibe.env"])
+        lock = files["vibe-requirements.txt"]
+        self.assertTrue(lock.startswith(
+            "# Generated by update_pins.py alongside pins/vibe.env — do not edit by hand.\n"))
+        self.assertIn("mistral-vibe==9.8.7 ", lock)
+        argv = run.call_args.args[0]
+        for flag in ("--generate-hashes", "--universal"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[argv.index("--python-version") + 1], "3.13")
+
+    def test_az_lock_keeps_its_extra_inputs(self):
+        files, _ = self._write("az", "9.8.7")
+        self.assertEqual(sorted(files), ["az-requirements.txt", "az.env"])
+        lock = files["az-requirements.txt"]
+        self.assertTrue(lock.startswith(
+            "# Generated by update_pins.py alongside pins/az.env — do not edit by hand.\n"))
+        for req in ("azure-cli-core==9.8.7", *up.AZ_LOCK_INPUT):
+            self.assertIn(req + " ", lock)
+
+    def test_tool_without_a_lock_writes_only_its_fragment(self):
+        files, run = self._write("npm", "9.8.7")
+        self.assertEqual(sorted(files), ["npm.env"])
+        run.assert_not_called()
+
+
+class TestVibeLock(unittest.TestCase):
+    """pins/vibe-requirements.txt must match pins/vibe.env and be fully
+    hash-locked: the Dockerfile installs vibe with --require-hashes from it and
+    only greps vibe.env's version against it."""
+
+    PINS = Path(__file__).resolve().parent.parent / "pins"
+
+    def setUp(self):
+        env = (self.PINS / "vibe.env").read_text()
+        self.version = re.search(r"^VIBE_VERSION=(\S+)$", env, re.M).group(1)
+        self.lock = (self.PINS / "vibe-requirements.txt").read_text()
+        blocks = re.split(r"(?m)^(?=[a-z0-9])", self.lock)
+        self.reqs = [b for b in blocks if b and not b.startswith("#")]
+
+    def test_vibe_matches_vibe_env(self):
+        self.assertRegex(self.lock, rf"(?m)^mistral-vibe=={re.escape(self.version)} ")
+
+    def test_every_requirement_is_pinned_and_hashed(self):
+        self.assertGreater(len(self.reqs), 1)
+        for b in self.reqs:
+            self.assertRegex(b, r"==\S+", b.splitlines()[0])
+            self.assertIn("--hash=sha256:", b, b.splitlines()[0])
+
+    def test_vibe_carries_a_hash_per_published_file(self):
+        """One lock serves amd64 and arm64 only if every wheel is hashed:
+        mistral-vibe publishes two manylinux, two macOS and one Windows wheel
+        plus an sdist."""
+        block = next(b for b in self.reqs if b.startswith("mistral-vibe=="))
+        self.assertGreaterEqual(block.count("--hash=sha256:"), 4)
 
 
 class TestAzCandidates(unittest.TestCase):

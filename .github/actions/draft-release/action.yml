@@ -158,7 +158,7 @@ runs:
         # The marker is what makes the draft ours: it is how a rerun finds the draft it
         # wrote last time instead of adding a second one, and it keeps hand-written drafts
         # out of reach.
-        MARKER='<!-- managed by claude-docker draft-release -->'
+        MARKER='<!-- managed by vibe-docker draft-release -->'
 
         fail() {
           echo "::error title=$1::$2" >&2

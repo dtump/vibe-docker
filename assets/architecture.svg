@@ -1,15 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1160" height="715" viewBox="0 0 1160 715" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
-  <title>claude-docker architecture</title>
-  <desc>You give a task to Claude Code, which runs in the claude-docker container on your machine with your mounted workspace and opt-in config. It talks to one model backend (a gateway such as LiteLLM via --api, or the Anthropic API directly) and to your Git forge (Azure DevOps via --az, GitLab via --glab, GitHub via --gh). The container sees only the directories you pass in, gets host credentials only with an opt-in flag, and is removed when the session ends.</desc>
+  <title>vibe-docker architecture</title>
+  <desc>You give a task to Mistral Vibe, which runs in the vibe-docker container on your machine with your mounted workspace and opt-in config. It talks to the Mistral API and to your Git forge (Azure DevOps via --az, GitLab via --glab, GitHub via --gh). The container sees only the directories you pass in, gets host credentials only with an opt-in flag, and is removed when the session ends.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#4a5361"/>
     </marker>
-    <g id="asterisk" stroke="#d97757" stroke-width="5" stroke-linecap="round">
-      <line x1="0" y1="-18" x2="0" y2="18"/>
-      <line x1="-18" y1="0" x2="18" y2="0"/>
-      <line x1="-13" y1="-13" x2="13" y2="13"/>
-      <line x1="-13" y1="13" x2="13" y2="-13"/>
+    <g id="prompt" stroke="#ff8204" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="M-18,-12 L-4,0 L-18,12"/>
+      <line x1="2" y1="14" x2="18" y2="14"/>
     </g>
     <g id="check">
       <circle r="8" fill="#2e9a5b"/>
@@ -20,8 +18,8 @@
   <rect width="1160" height="715" fill="#ffffff"/>
 
   <!-- Title -->
-  <text x="20" y="55" font-size="34" font-weight="700" fill="#111">claude-docker<tspan font-size="24" font-weight="400" fill="#5a6270">: the harness that runs Claude Code in a container</tspan></text>
-  <text x="20" y="92" font-size="17" fill="#5a6270">Pick your model backend and connect your Git forge. The container narrows what the agent can reach on your machine.</text>
+  <text x="20" y="55" font-size="34" font-weight="700" fill="#111">vibe-docker<tspan font-size="24" font-weight="400" fill="#5a6270">: the harness that runs Mistral Vibe in a container</tspan></text>
+  <text x="20" y="92" font-size="17" fill="#5a6270">Connect your Git forge. The container narrows what the agent can reach on your machine.</text>
 
   <!-- Your machine -->
   <rect x="20" y="130" width="590" height="565" rx="16" fill="#f6f7f9" stroke="#d5d9df" stroke-width="2"/>
@@ -37,13 +35,13 @@
 
   <!-- Container -->
   <rect x="180" y="180" width="410" height="495" rx="14" fill="#eef3fc" stroke="#3b6fd8" stroke-width="3"/>
-  <text x="200" y="218" font-size="22" font-weight="700" fill="#1f3f8f">claude-docker container</text>
+  <text x="200" y="218" font-size="22" font-weight="700" fill="#1f3f8f">vibe-docker container</text>
   <text x="200" y="242" font-size="14" fill="#3b6fd8">the harness: narrows the agent's reach on your host</text>
 
-  <!-- Claude Code -->
-  <rect x="200" y="262" width="370" height="122" rx="10" fill="#fff" stroke="#d97757" stroke-width="2.5"/>
-  <use href="#asterisk" x="238" y="323"/>
-  <text x="272" y="305" font-size="19" font-weight="700" fill="#111">Claude Code (agent)</text>
+  <!-- Mistral Vibe -->
+  <rect x="200" y="262" width="370" height="122" rx="10" fill="#fff" stroke="#ff8204" stroke-width="2.5"/>
+  <use href="#prompt" x="238" y="323"/>
+  <text x="272" y="305" font-size="19" font-weight="700" fill="#111">Mistral Vibe (agent)</text>
   <text x="272" y="331" font-size="14" fill="#333">reads code, edits files, runs tools,</text>
   <text x="272" y="351" font-size="14" fill="#333">opens issues and pull/merge requests</text>
 
@@ -60,7 +58,7 @@
   <circle cx="420" cy="440" r="11" fill="none" stroke="#4a5361" stroke-width="3"/>
   <circle cx="420" cy="440" r="4" fill="#4a5361"/>
   <text x="442" y="434" font-size="15" font-weight="700" fill="#111">Config</text>
-  <text x="442" y="455" font-size="12" fill="#5a6270">model endpoint,</text>
+  <text x="442" y="455" font-size="12" fill="#5a6270">Mistral key,</text>
   <text x="442" y="471" font-size="12" fill="#5a6270">forge tokens</text>
   <text x="442" y="487" font-size="12" fill="#5a6270">(opt-in per flag)</text>
 
@@ -75,23 +73,16 @@
   <text x="246" y="633" font-size="14" fill="#333">container removed when the session ends</text>
 
   <!-- Model backend -->
-  <text x="680" y="160" font-size="14" font-weight="700" letter-spacing="2" fill="#5a6270">MODEL BACKEND: CHOOSE ONE</text>
-  <rect x="680" y="178" width="210" height="132" rx="12" fill="#fff" stroke="#4aa3df" stroke-width="2.5"/>
-  <text x="698" y="210" font-size="17" font-weight="700" fill="#111">LiteLLM / gateway</text>
-  <text x="698" y="236" font-size="12.5" fill="#333">via --api: keys, budgets,</text>
-  <text x="698" y="255" font-size="12.5" fill="#333">logging, routing to Bedrock,</text>
-  <text x="698" y="274" font-size="12.5" fill="#333">Vertex, Azure or Anthropic</text>
-  <text x="910" y="250" font-size="17" font-weight="700" fill="#8a919c" text-anchor="middle">or</text>
-  <rect x="930" y="178" width="210" height="132" rx="12" fill="#fff" stroke="#d97757" stroke-width="2.5"/>
-  <g transform="translate(958 204) scale(0.55)"><use href="#asterisk"/></g>
-  <text x="980" y="210" font-size="17" font-weight="700" fill="#111">Claude</text>
-  <text x="946" y="236" font-size="12.5" fill="#333">directly via the Anthropic API</text>
-  <text x="946" y="255" font-size="12.5" fill="#333">(api.anthropic.com), with</text>
-  <text x="946" y="274" font-size="12.5" fill="#333">your Claude login or API key</text>
+  <text x="680" y="160" font-size="14" font-weight="700" letter-spacing="2" fill="#5a6270">MODEL BACKEND</text>
+  <rect x="680" y="178" width="460" height="132" rx="12" fill="#fff" stroke="#ff8204" stroke-width="2.5"/>
+  <g transform="translate(712 204) scale(0.55)"><use href="#prompt"/></g>
+  <text x="734" y="210" font-size="17" font-weight="700" fill="#111">Mistral API</text>
+  <text x="698" y="240" font-size="12.5" fill="#333">api.mistral.ai, with the key from vibe's setup wizard</text>
+  <text x="698" y="259" font-size="12.5" fill="#333">(kept in the vibe-home volume) or your host's</text>
+  <text x="698" y="278" font-size="12.5" fill="#333">MISTRAL_API_KEY via --mistral</text>
 
   <!-- Model traffic -->
   <path d="M570,300 C620,300 640,244 676,244" fill="none" stroke="#4a5361" stroke-width="2.5" marker-end="url(#arrow)"/>
-  <path d="M570,340 C760,345 940,345 1035,314" fill="none" stroke="#4a5361" stroke-width="2.5" stroke-dasharray="7 6" marker-end="url(#arrow)"/>
   <text x="645" y="196" font-size="11" fill="#5a6270" text-anchor="middle">prompts /</text>
   <text x="645" y="210" font-size="11" fill="#5a6270" text-anchor="middle">completions</text>
 

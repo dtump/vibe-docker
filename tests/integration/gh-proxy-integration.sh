@@ -9,7 +9,7 @@
 # standalone docker invocation, so it has to be exercised through the real
 # entrypoint. A mock GitHub upstream (the same pinned Caddy image, running as a
 # plain-HTTP echo server) stands in for github.com/api.github.com/
-# uploads.github.com via run.sh's test-only CLAUDE_DOCKER_GH_UPSTREAM hook, so
+# uploads.github.com via run.sh's test-only VIBE_DOCKER_GH_UPSTREAM hook, so
 # no GitHub credentials are ever needed.
 #
 # Uses a FAKE token throughout (ghp_fake...); never reads or forwards a real
@@ -21,26 +21,26 @@
 #        trust), gh's Go resolver honours --add-host, git's smart-HTTP request
 #        reaches the mock with the injected Basic header.
 #   4.3  default policy blocks DELETE /repos/{o}/{r} and /repositories/{id} (403 + policy body, never
-#        reaches the mock); benign requests pass; a CLAUDE_DOCKER_GH_POLICY
+#        reaches the mock); benign requests pass; a VIBE_DOCKER_GH_POLICY
 #        extension is enforced.
 #   4.4  sidecar audit log has structured method/path/status entries, never
 #        contains the token, and the name run.sh prints matches the running
 #        container.
 #   4.5  two concurrent sessions get distinct networks/sidecars/CA roots, both
-#        work, and teardown leaves no claude-auth-* resources.
+#        work, and teardown leaves no vibe-auth-* resources.
 #   4.6  --gh-direct forwards the real token with no sidecar; --gh with no
 #        discoverable host token starts no sidecar and stays silent; --gh
-#        --gh-direct together is rejected; a bad CLAUDE_DOCKER_PROXY_IMAGE
+#        --gh-direct together is rejected; a bad VIBE_DOCKER_PROXY_IMAGE
 #        fails closed (no agent container, no leftovers).
 #   #22  release-asset HEAD probes leave the sidecar with no Authorization
 #        header while the GET on the same path keeps the injected Basic one,
 #        and UV_SYSTEM_CERTS=1 reaches the agent container.
-#   phase 5 (openspec/changes/auth-proxy-glab-api): --glab and --api share one
-#        sidecar; placeholders in the agent env, fake credentials absent from
-#        /proc/1/environ and the audit log, Bearer on GitLab /api/, Basic on
-#        git paths, nothing on web paths, URL-encoded project DELETE blocked
-#        before the mock, gateway path prefix kept with the key injected and
-#        a stray bearer dropped.
+#   phase 5: --gh and --glab share one sidecar; placeholders in the agent
+#        env, fake credentials absent from /proc/1/environ and the audit log,
+#        Bearer on GitLab /api/, Basic on git paths, nothing on web or LFS
+#        paths, URL-encoded project DELETE blocked before the mock.
+#   phase 6: an invalid VIBE_DOCKER_GLAB_POLICY fails closed; --glab with no
+#        token starts no sidecar.
 #
 # Known deviations / assumptions (see the final report to the orchestrator for
 # the full list):
@@ -50,7 +50,7 @@
 #     succeeds") assumes a git-aware mock; this harness deliberately trades
 #     that for a much simpler, more robust mock and verifies transport+auth
 #     via logs instead. Documented, not silently downgraded.
-#   - The CLAUDE_DOCKER_GH_POLICY snippet syntax is inferred (a `@name { }`
+#   - The VIBE_DOCKER_GH_POLICY snippet syntax is inferred (a `@name { }`
 #     matcher block + `respond`) — run.sh's own snippet-import mechanics were
 #     not available to read against at the time this harness was written.
 #   - Caddy REDACTS credential headers (Authorization, Cookie, …) in access
@@ -99,9 +99,9 @@ preflight() {
     exit 1
   fi
 
-  TARGET_IMAGE="${CLAUDE_DOCKER_IMAGE:-claude-code:local}"
+  TARGET_IMAGE="${VIBE_DOCKER_IMAGE:-mistral-vibe:local}"
   if ! docker image inspect "$TARGET_IMAGE" >/dev/null 2>&1; then
-    echo "FATAL: image '$TARGET_IMAGE' not found — build it first (docker build -t claude-code:local .). CI is expected to build it before running this harness." >&2
+    echo "FATAL: image '$TARGET_IMAGE' not found — build it first (docker build -t mistral-vibe:local .). CI is expected to build it before running this harness." >&2
     exit 1
   fi
 
@@ -116,7 +116,7 @@ preflight() {
 
 # Pinned mock image — deliberately the SAME digest-pinned Caddy image the
 # sidecar itself uses (see run.sh's PROXY_IMAGE default), reused here as a
-# generic plain-HTTP echo server. Not read from CLAUDE_DOCKER_PROXY_IMAGE:
+# generic plain-HTTP echo server. Not read from VIBE_DOCKER_PROXY_IMAGE:
 # that env var is reserved below for the 4.6 bad-image scenario, which must
 # only affect the SIDECAR run.sh starts, never this harness's own mock.
 MOCK_IMAGE="caddy:2.11.4@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9"
@@ -126,7 +126,6 @@ FAKE_A="ghp_fakeConcurrentSessionTokenA00000001"
 FAKE_B="ghp_fakeConcurrentSessionTokenB00000002"
 FAKE_DIRECT="ghp_fakeGhDirectToken000000000000000001"
 FAKE_GLAB="glpat-fakeGlabProxyToken00000000000001"
-FAKE_API="sk-ant-fakeApiProxyKey000000000000000001"
 
 # ---------------------------------------------------------------------------
 # Result bookkeeping
@@ -180,7 +179,7 @@ CLEANUP_DONE=0
 # Fails hard instead of leaving SCRATCH empty: every later path is built as
 # "$SCRATCH/...", which would otherwise resolve under /.
 setup_scratch() {
-  local root="$HOME/.cache/claude-docker"
+  local root="$HOME/.cache/vibe-docker"
   if ! mkdir -p "$root" || ! SCRATCH=$(mktemp -d "$root/ghtest.XXXXXX"); then
     echo "FATAL: could not create a scratch dir under $root" >&2
     SCRATCH=""
@@ -188,28 +187,25 @@ setup_scratch() {
   fi
 }
 
-# Removes STOPPED claude-auth-* sidecars and unused networks — mirrors run.sh's
+# Removes STOPPED vibe-auth-* sidecars and unused networks — mirrors run.sh's
 # own startup prune (same prefix, same stopped-only rationale). CRITICAL: never
-# touches a RUNNING claude-auth-proxy-* container, because that almost certainly
-# belongs to a concurrent live `claude-docker --gh` session on this same host
+# touches a RUNNING vibe-auth-proxy-* container, because that almost certainly
+# belongs to a concurrent live `vibe-docker --gh` session on this same host
 # (e.g. the one you may be running this from) — force-removing it would sever
 # that session's GitHub access mid-flight. Network rm is best-effort and fails
 # harmlessly on an in-use network (a live session's), so only genuinely orphaned
 # networks are removed. Called at pre-flight (so a prior crashed run of THIS
 # harness can't confuse discovery) and from the exit trap (backstop only).
-sweep_stale_claude_auth() {
-  local prefix cid nid
-  # claude-gh-* is the name the sidecar had before it served --glab / --api.
-  for prefix in claude-auth claude-gh; do
-    docker ps -aq --filter "name=^$prefix-proxy-" \
-        --filter "status=exited" --filter "status=created" --filter "status=dead" \
-        2>/dev/null | while IFS= read -r cid; do
-      [ -z "$cid" ] || docker rm -f "$cid" >/dev/null 2>&1 || true
-    done || true
-    docker network ls -q --filter "name=^$prefix-" 2>/dev/null | while IFS= read -r nid; do
-      [ -z "$nid" ] || docker network rm "$nid" >/dev/null 2>&1 || true
-    done || true
-  done
+sweep_stale_vibe_auth() {
+  local cid nid
+  docker ps -aq --filter "name=^vibe-auth-proxy-" \
+      --filter "status=exited" --filter "status=created" --filter "status=dead" \
+      2>/dev/null | while IFS= read -r cid; do
+    [ -z "$cid" ] || docker rm -f "$cid" >/dev/null 2>&1 || true
+  done || true
+  docker network ls -q --filter "name=^vibe-auth-" 2>/dev/null | while IFS= read -r nid; do
+    [ -z "$nid" ] || docker network rm "$nid" >/dev/null 2>&1 || true
+  done || true
 }
 
 # Signals $1 and all its descendants, children first. Killing the process
@@ -239,7 +235,7 @@ cleanup() {
   fi
   wait 2>/dev/null || true
   [ -z "$MOCK_CID" ] || docker rm -f "$MOCK_CID" >/dev/null 2>&1 || true
-  sweep_stale_claude_auth
+  sweep_stale_vibe_auth
   # Keep the scratch dir (session transcripts, captured sidecar/mock logs,
   # results files) whenever anything failed — it's the only debugging
   # evidence, and several artifacts in it can't be regenerated after the
@@ -252,8 +248,8 @@ cleanup() {
   fi
 }
 
-# Baseline: claude-auth-* resources that already exist AFTER the sweep — i.e. a
-# concurrent live `claude-docker --gh` session's network/sidecar on this host
+# Baseline: vibe-auth-* resources that already exist AFTER the sweep — i.e. a
+# concurrent live `vibe-docker --gh` session's network/sidecar on this host
 # (the sweep leaves running sidecars alone). They legitimately persist for the
 # whole run, so teardown assertions must judge "clean" as "nothing NEW beyond
 # this baseline", never "nothing at all". Space-padded for whole-word `case`
@@ -261,12 +257,12 @@ cleanup() {
 BASELINE_NETS=" "
 BASELINE_SIDECARS=" "
 capture_baseline() {
-  echo "Pre-flight: sweeping any stale claude-auth-* resources from a previous run..."
-  sweep_stale_claude_auth
-  BASELINE_NETS=" $(snapshot_claude_auth_nets)"
-  BASELINE_SIDECARS=" $({ docker ps -a --filter 'name=claude-auth-proxy-' --format '{{.Names}}' 2>/dev/null || true; } | tr '\n' ' ')"
+  echo "Pre-flight: sweeping any stale vibe-auth-* resources from a previous run..."
+  sweep_stale_vibe_auth
+  BASELINE_NETS=" $(snapshot_vibe_auth_nets)"
+  BASELINE_SIDECARS=" $({ docker ps -a --filter 'name=vibe-auth-proxy-' --format '{{.Names}}' 2>/dev/null || true; } | tr '\n' ' ')"
   if [ -n "$(printf '%s' "$BASELINE_NETS" | tr -d ' ')" ]; then
-    echo "Pre-flight: detected pre-existing claude-auth-* resources (likely a live --gh session) — excluding from teardown checks:$BASELINE_NETS"
+    echo "Pre-flight: detected pre-existing vibe-auth-* resources (likely a live --gh session) — excluding from teardown checks:$BASELINE_NETS"
   fi
 }
 
@@ -349,36 +345,36 @@ wait_for_container_running() {
   return 1
 }
 
-# Space-separated list of claude-auth-* resources that exist now but were NOT in
+# Space-separated list of vibe-auth-* resources that exist now but were NOT in
 # the pre-existing baseline — i.e. resources this harness created and failed to
 # clean up. Empty means clean. A concurrent live session (in the baseline) is
 # correctly ignored.
-new_claude_auth_leftovers() {
+new_vibe_auth_leftovers() {
   local n c out=""
-  for n in $(docker network ls --filter 'name=claude-auth-' --format '{{.Name}}' 2>/dev/null); do
+  for n in $(docker network ls --filter 'name=vibe-auth-' --format '{{.Name}}' 2>/dev/null); do
     case "$BASELINE_NETS" in *" $n "*) ;; *) out="$out net:$n" ;; esac
   done
-  for c in $(docker ps -a --filter 'name=claude-auth-proxy-' --format '{{.Names}}' 2>/dev/null); do
+  for c in $(docker ps -a --filter 'name=vibe-auth-proxy-' --format '{{.Names}}' 2>/dev/null); do
     case "$BASELINE_SIDECARS" in *" $c "*) ;; *) out="$out container:$c" ;; esac
   done
   printf '%s' "${out# }"
 }
 
-no_new_claude_auth_resources() {
-  [ -z "$(new_claude_auth_leftovers)" ]
+no_new_vibe_auth_resources() {
+  [ -z "$(new_vibe_auth_leftovers)" ]
 }
 
-wait_for_absence_claude_auth() {
+wait_for_absence_vibe_auth() {
   local timeout="$1" i=0
   while [ "$i" -lt "$timeout" ]; do
-    no_new_claude_auth_resources && return 0
+    no_new_vibe_auth_resources && return 0
     i=$((i + 1))
     sleep 1
   done
   return 1
 }
 
-# Polls `docker network ls` for a claude-auth-* network not already named in
+# Polls `docker network ls` for a vibe-auth-* network not already named in
 # $2 (space-separated). Session ids are mktemp suffixes chosen by run.sh
 # itself and unknowable ahead of time, so discovery is the only option; the
 # pre-flight sweep above plus this exclude-list keep concurrent-session
@@ -386,7 +382,7 @@ wait_for_absence_claude_auth() {
 poll_new_network() {
   local timeout="$1" exclude="$2" i=0 candidates line
   while [ "$i" -lt "$timeout" ]; do
-    candidates=$(docker network ls --filter "name=claude-auth-" --format '{{.Name}}' 2>/dev/null) || candidates=""
+    candidates=$(docker network ls --filter "name=vibe-auth-" --format '{{.Name}}' 2>/dev/null) || candidates=""
     while IFS= read -r line; do
       [ -z "$line" ] && continue
       case " $exclude " in
@@ -401,14 +397,14 @@ poll_new_network() {
   return 1
 }
 
-# Space-delimited snapshot of the claude-auth-* networks that exist RIGHT NOW.
+# Space-delimited snapshot of the vibe-auth-* networks that exist RIGHT NOW.
 # Captured immediately before launching a run.sh and fed to poll_new_network as
 # the exclude list, so a network stranded by an earlier interrupted run (which
 # the pre-flight sweep cannot remove while a wedged sidecar still holds it)
 # can never be misidentified as this session's freshly-created network — the
 # failure mode that otherwise cascades into wrong-network mock attachment.
-snapshot_claude_auth_nets() {
-  { docker network ls --filter "name=claude-auth-" --format '{{.Name}}' 2>/dev/null || true; } | tr '\n' ' '
+snapshot_vibe_auth_nets() {
+  { docker network ls --filter "name=vibe-auth-" --format '{{.Name}}' 2>/dev/null || true; } | tr '\n' ' '
 }
 
 # Builds a PATH whose first entry holds an always-failing `gh` stub, for the
@@ -446,7 +442,6 @@ gen_assert_script() {
     printf 'set -uo pipefail\n'
     printf 'MODE=%q\n' "$mode"
     printf 'FAKE_TOKEN=%q\n' "$fake"
-    printf 'FAKE_API=%q\n' "$FAKE_API"
     printf 'FAKE_GH=%q\n' "$FAKE1"
     printf 'POLICY_EXT=%q\n' "$policy_ext"
     printf 'RESULTS=%q\n' "$results"
@@ -472,13 +467,13 @@ wait_for_release() {
 }
 
 run_main_checks() {
-  if [ "${GH_TOKEN:-}" = "claude-docker-proxy" ]; then
-    pass "4.2 placeholder GH_TOKEN in agent env (GH_TOKEN=claude-docker-proxy)"
+  if [ "${GH_TOKEN:-}" = "vibe-docker-proxy" ]; then
+    pass "4.2 placeholder GH_TOKEN in agent env (GH_TOKEN=vibe-docker-proxy)"
   else
-    fail "4.2 placeholder GH_TOKEN: expected 'claude-docker-proxy', got '${GH_TOKEN:-<unset>}'"
+    fail "4.2 placeholder GH_TOKEN: expected 'vibe-docker-proxy', got '${GH_TOKEN:-<unset>}'"
   fi
 
-  # PID 1 is this script itself (CLAUDE_DOCKER_TEST_ENTRY is "exec bash
+  # PID 1 is this script itself (VIBE_DOCKER_TEST_ENTRY is "exec bash
   # <this file>", and the outer `sh -c` execs into it), so /proc/1/environ is
   # our own environment — reading it needs no special privilege.
   if grep -aq -- "$FAKE_TOKEN" /proc/1/environ 2>/dev/null; then
@@ -527,7 +522,7 @@ run_main_checks() {
       fail "4.2 gh api /rate_limit failed: $gh_err"
     fi
     rm -f /tmp/gh_gh_err.$$
-    if [ "$(gh auth token 2>/dev/null)" = "claude-docker-proxy" ]; then
+    if [ "$(gh auth token 2>/dev/null)" = "vibe-docker-proxy" ]; then
       pass "4.2 gh auth token returns the placeholder, not the real token"
     else
       fail "4.2 gh auth token did not return the placeholder"
@@ -554,7 +549,7 @@ run_main_checks() {
 
   local delete_code
   delete_code=$(curl -sS --max-time 10 -o /tmp/gh_delete_body.$$ -w '%{http_code}' -X DELETE https://api.github.com/repos/o/r 2>/dev/null)
-  if [ "$delete_code" = "403" ] && grep -q "claude-docker gh-proxy policy" /tmp/gh_delete_body.$$; then
+  if [ "$delete_code" = "403" ] && grep -q "vibe-docker gh-proxy policy" /tmp/gh_delete_body.$$; then
     pass "4.3 default policy blocks DELETE /repos/o/r (403, policy body present)"
   else
     fail "4.3 default policy did not block DELETE /repos/o/r as expected (code=$delete_code body=$(cat /tmp/gh_delete_body.$$ 2>/dev/null))"
@@ -562,7 +557,7 @@ run_main_checks() {
   rm -f /tmp/gh_delete_body.$$
 
   delete_code=$(curl -sS --max-time 10 -o /tmp/gh_delete_body.$$ -w '%{http_code}' -X DELETE https://api.github.com/repositories/123 2>/dev/null)
-  if [ "$delete_code" = "403" ] && grep -q "claude-docker gh-proxy policy" /tmp/gh_delete_body.$$; then
+  if [ "$delete_code" = "403" ] && grep -q "vibe-docker gh-proxy policy" /tmp/gh_delete_body.$$; then
     pass "4.3 default policy blocks DELETE /repositories/123 (403, policy body present)"
   else
     fail "4.3 default policy did not block DELETE /repositories/123 as expected (code=$delete_code body=$(cat /tmp/gh_delete_body.$$ 2>/dev/null))"
@@ -573,9 +568,9 @@ run_main_checks() {
     local refs_code
     refs_code=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X DELETE https://api.github.com/repos/o/r/git/refs/heads/foo 2>/dev/null)
     if [ "$refs_code" = "403" ]; then
-      pass "4.3 CLAUDE_DOCKER_GH_POLICY extension blocks DELETE .../git/refs/heads/foo (403)"
+      pass "4.3 VIBE_DOCKER_GH_POLICY extension blocks DELETE .../git/refs/heads/foo (403)"
     else
-      fail "4.3 CLAUDE_DOCKER_GH_POLICY extension did not block DELETE .../git/refs/heads/foo (code=$refs_code)"
+      fail "4.3 VIBE_DOCKER_GH_POLICY extension did not block DELETE .../git/refs/heads/foo (code=$refs_code)"
     fi
   fi
 
@@ -624,31 +619,25 @@ run_concurrent_check() {
   fi
 }
 
-# --glab + --api through one sidecar. The GitLab host is gitlab.example.test
+# --gh + --glab through one sidecar. The GitLab host is gitlab.example.test
 # (redirected to the sidecar by --add-host, upstream repointed at the mock via
-# CLAUDE_DOCKER_GLAB_UPSTREAM); the model endpoint is the mock at /gw.
-run_glabapi_checks() {
-  [ "${GITLAB_TOKEN:-}" = "claude-docker-proxy" ] \
+# VIBE_DOCKER_GLAB_UPSTREAM).
+run_ghglab_checks() {
+  [ "${GITLAB_TOKEN:-}" = "vibe-docker-proxy" ] \
     && pass "glab: placeholder GITLAB_TOKEN in agent env" \
-    || fail "glab: GITLAB_TOKEN expected 'claude-docker-proxy', got '${GITLAB_TOKEN:-<unset>}'"
-  [ "${GH_TOKEN:-}" = "claude-docker-proxy" ] \
+    || fail "glab: GITLAB_TOKEN expected 'vibe-docker-proxy', got '${GITLAB_TOKEN:-<unset>}'"
+  [ "${GH_TOKEN:-}" = "vibe-docker-proxy" ] \
     && pass "gh: placeholder GH_TOKEN in agent env" \
-    || fail "gh: GH_TOKEN expected 'claude-docker-proxy', got '${GH_TOKEN:-<unset>}'"
-  [ "${ANTHROPIC_API_KEY:-}" = "claude-docker-proxy" ] \
-    && pass "api: placeholder ANTHROPIC_API_KEY in agent env" \
-    || fail "api: ANTHROPIC_API_KEY expected 'claude-docker-proxy', got '${ANTHROPIC_API_KEY:-<unset>}'"
-  [ "${ANTHROPIC_BASE_URL:-}" = "http://claude-docker-api-proxy:8080" ] \
-    && pass "api: ANTHROPIC_BASE_URL points at the sidecar" \
-    || fail "api: ANTHROPIC_BASE_URL is '${ANTHROPIC_BASE_URL:-<unset>}'"
-  if grep -aq -e "$FAKE_TOKEN" -e "$FAKE_API" -e "$FAKE_GH" /proc/1/environ 2>/dev/null; then
-    fail "gh/glab/api: a fake host credential is in /proc/1/environ"
+    || fail "gh: GH_TOKEN expected 'vibe-docker-proxy', got '${GH_TOKEN:-<unset>}'"
+  if grep -aq -e "$FAKE_TOKEN" -e "$FAKE_GH" /proc/1/environ 2>/dev/null; then
+    fail "gh/glab: a fake host credential is in /proc/1/environ"
   else
-    pass "gh/glab/api: no fake host credential is in /proc/1/environ"
+    pass "gh/glab: no fake host credential is in /proc/1/environ"
   fi
 
   local i=0 out=""
   while [ "$i" -lt 40 ]; do
-    out=$(curl -sS --max-time 5 -H 'PRIVATE-TOKEN: claude-docker-proxy' https://gitlab.example.test/api/v4/user 2>/dev/null) && break
+    out=$(curl -sS --max-time 5 -H 'PRIVATE-TOKEN: vibe-docker-proxy' https://gitlab.example.test/api/v4/user 2>/dev/null) && break
     out=""; i=$((i + 1)); sleep 1
   done
   case "$out" in
@@ -690,30 +679,23 @@ run_glabapi_checks() {
   # $SCRATCH does not exist, and the container is discarded afterwards.
   body=$(mktemp)
   code=$(curl -sS --max-time 10 -o "$body" -w '%{http_code}' -X DELETE 'https://gitlab.example.test/api/v4/projects/g%2Fp' 2>/dev/null)
-  if [ "$code" = 403 ] && grep -q "claude-docker glab-proxy policy" "$body"; then
+  if [ "$code" = 403 ] && grep -q "vibe-docker glab-proxy policy" "$body"; then
     pass "glab: default policy blocks DELETE /api/v4/projects/g%2Fp"
   else
     fail "glab: DELETE /api/v4/projects/g%2Fp got $code"
   fi
   code=$(curl -sS --max-time 10 -o "$body" -w '%{http_code}' -X POST 'https://gitlab.example.test/api/v4/personal_access_tokens/self/rotate' 2>/dev/null)
-  if [ "$code" = 403 ] && grep -q "claude-docker glab-proxy policy" "$body"; then
+  if [ "$code" = 403 ] && grep -q "vibe-docker glab-proxy policy" "$body"; then
     pass "glab: default policy blocks POST /api/v4/personal_access_tokens/self/rotate"
   else
     fail "glab: POST /api/v4/personal_access_tokens/self/rotate got $code"
   fi
   rm -f "$body"
-
-  out=$(curl -sS --max-time 10 -X POST -H 'x-api-key: claude-docker-proxy' -H 'Authorization: Bearer oauth-from-volume' \
-    -d '{}' http://claude-docker-api-proxy:8080/v1/messages 2>/dev/null)
-  case "$out" in
-    *'"path":"/gw/v1/messages"'*'"authorization":""'*"\"x_api_key\":\"$FAKE_API\""*) pass "api: prefix kept, key injected, stray bearer dropped" ;;
-    *) fail "api: unexpected echo for /v1/messages: ${out:-<no response>}" ;;
-  esac
 }
 
 case "$MODE" in
-  glabapi)
-    run_glabapi_checks
+  ghglab)
+    run_ghglab_checks
     touch "$DONE_MARKER"
     wait_for_release
     ;;
@@ -793,7 +775,7 @@ start_mock() {
 		format json
 	}
 
-	respond "{\"method\":\"{http.request.method}\",\"host\":\"{http.request.host}\",\"path\":\"{http.request.uri.path}\",\"query\":\"{http.request.uri.query}\",\"authorization\":\"{http.request.header.Authorization}\",\"private_token\":\"{http.request.header.PRIVATE-TOKEN}\",\"x_api_key\":\"{http.request.header.X-Api-Key}\"}" 200
+	respond "{\"method\":\"{http.request.method}\",\"host\":\"{http.request.host}\",\"path\":\"{http.request.uri.path}\",\"query\":\"{http.request.uri.query}\",\"authorization\":\"{http.request.header.Authorization}\",\"private_token\":\"{http.request.header.PRIVATE-TOKEN}\"}" 200
 }
 CADDYFILE
 
@@ -833,36 +815,36 @@ phase1_main_session() {
   gen_assert_script "$ws/assert.sh" main "$FAKE1" "1"
 
   cat > "$policy_file" <<'POLICY'
-@claude_docker_test_policy_ext {
+@vibe_docker_test_policy_ext {
 	method DELETE
 	path_regexp ^/repos/[^/]+/[^/]+/git/refs/.*
 }
-respond @claude_docker_test_policy_ext "claude-docker gh-proxy policy (test extension): destructive ref deletion blocked" 403
+respond @vibe_docker_test_policy_ext "vibe-docker gh-proxy policy (test extension): destructive ref deletion blocked" 403
 POLICY
 
-  pre=$(snapshot_claude_auth_nets)
+  pre=$(snapshot_vibe_auth_nets)
   run_wrapped "$log" env \
     GH_TOKEN="$FAKE1" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_GH_UPSTREAM="http://ghmock:8080" \
-    CLAUDE_DOCKER_GH_POLICY="$policy_file" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-main/assert.sh" \
+    VIBE_DOCKER_RUNTIME=docker \
+    VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
+    VIBE_DOCKER_GH_UPSTREAM="http://ghmock:8080" \
+    VIBE_DOCKER_GH_POLICY="$policy_file" \
+    VIBE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-main/assert.sh" \
     bash "$RUN_SH" --gh "$ws" &
   pid=$!
   BG_PIDS+=("$pid")
 
   net=$(poll_new_network 30 "$pre") || net=""
   if [ -n "$net" ]; then
-    record_pass "setup: session network '$net' appeared (task 2.1 naming: claude-auth-<id>)"
+    record_pass "setup: session network '$net' appeared (task 2.1 naming: vibe-auth-<id>)"
     if docker network connect --alias ghmock "$net" "$MOCK_CID" 2>/dev/null; then
       record_pass "setup: mock attached to $net as alias 'ghmock'"
     else
       record_fail "setup: could not attach mock to $net"
     fi
-    sidecar="claude-auth-proxy-${net#claude-auth-}"
+    sidecar="vibe-auth-proxy-${net#vibe-auth-}"
     if wait_for_container_running "$sidecar" 15; then
-      record_pass "4.4 sidecar '$sidecar' is running (task 2.1 naming: claude-auth-proxy-<id>)"
+      record_pass "4.4 sidecar '$sidecar' is running (task 2.1 naming: vibe-auth-proxy-<id>)"
     else
       record_fail "4.4 derived sidecar name '$sidecar' never appeared as a running container"
       sidecar=""
@@ -945,9 +927,9 @@ POLICY
   fi
   lines=$(grep -F '"uri":"/repos/o/r/git/refs/heads/foo"' "$mock_log" 2>/dev/null || true)
   if [ -n "$lines" ]; then
-    record_fail "4.3 CLAUDE_DOCKER_GH_POLICY-extended DELETE .../git/refs/heads/foo reached the mock upstream"
+    record_fail "4.3 VIBE_DOCKER_GH_POLICY-extended DELETE .../git/refs/heads/foo reached the mock upstream"
   else
-    record_pass "4.3 CLAUDE_DOCKER_GH_POLICY-extended DELETE .../git/refs/heads/foo never reached the mock upstream"
+    record_pass "4.3 VIBE_DOCKER_GH_POLICY-extended DELETE .../git/refs/heads/foo never reached the mock upstream"
   fi
   lines=$(grep -F '/o/r/info/refs' "$mock_log" 2>/dev/null || true)
   if [ -n "$lines" ] && printf '%s\n' "$lines" | grep -qF '"Authorization":["Basic'; then
@@ -983,13 +965,13 @@ POLICY
 # $2 fake token. Sets PID and NET (empty when the network never appeared).
 start_concurrent_session() {
   local ws_name="$1" fake="$2" pre
-  pre=$(snapshot_claude_auth_nets)
+  pre=$(snapshot_vibe_auth_nets)
   run_wrapped "$SCRATCH/run-$ws_name.log" env \
     GH_TOKEN="$fake" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_GH_UPSTREAM="http://ghmock:8080" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/$ws_name/assert.sh" \
+    VIBE_DOCKER_RUNTIME=docker \
+    VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
+    VIBE_DOCKER_GH_UPSTREAM="http://ghmock:8080" \
+    VIBE_DOCKER_TEST_ENTRY="exec bash /workspaces/$ws_name/assert.sh" \
     bash "$RUN_SH" --gh "$SCRATCH/$ws_name" &
   PID=$!
   BG_PIDS+=("$PID")
@@ -1033,11 +1015,11 @@ phase2_concurrent() {
   fi
 
   if [ -n "$net_a" ]; then
-    sidecar_a="claude-auth-proxy-${net_a#claude-auth-}"
+    sidecar_a="vibe-auth-proxy-${net_a#vibe-auth-}"
     if wait_for_file "$ws_a/checks-done" 90; then ok_a=1; fi
   fi
   if [ -n "$net_b" ]; then
-    sidecar_b="claude-auth-proxy-${net_b#claude-auth-}"
+    sidecar_b="vibe-auth-proxy-${net_b#vibe-auth-}"
     if wait_for_file "$ws_b/checks-done" 90; then ok_b=1; fi
   fi
 
@@ -1078,10 +1060,10 @@ phase2_concurrent() {
   ingest_results_file "$ws_a/results.txt" "concurrent-A"
   ingest_results_file "$ws_b/results.txt" "concurrent-B"
 
-  if wait_for_absence_claude_auth 20; then
-    record_pass "4.5 teardown: no claude-auth-* containers or networks remain after both sessions exit"
+  if wait_for_absence_vibe_auth 20; then
+    record_pass "4.5 teardown: no vibe-auth-* containers or networks remain after both sessions exit"
   else
-    record_fail "4.5 teardown: harness-created claude-auth-* leftovers remain (baseline/live-session resources excluded): [$(new_claude_auth_leftovers)]"
+    record_fail "4.5 teardown: harness-created vibe-auth-* leftovers remain (baseline/live-session resources excluded): [$(new_vibe_auth_leftovers)]"
   fi
 }
 
@@ -1099,7 +1081,7 @@ run_wrapped_wait() {
 
 # ===========================================================================
 # Phase 3 (task 4.6): --gh-direct, no-token silence, flag conflict, bad image.
-# Run only after phase 1/2 have fully torn down, so "no claude-auth-* resources"
+# Run only after phase 1/2 have fully torn down, so "no vibe-auth-* resources"
 # checks below aren't confused by an unrelated leftover from an earlier phase.
 # ===========================================================================
 phase3_flags() {
@@ -1114,16 +1096,16 @@ phase3_flags() {
   gen_assert_script "$ws/assert.sh" direct "$FAKE_DIRECT" ""
   run_wrapped_wait "$log" env \
     GH_TOKEN="$FAKE_DIRECT" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-direct/assert.sh" \
+    VIBE_DOCKER_RUNTIME=docker \
+    VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
+    VIBE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-direct/assert.sh" \
     bash "$RUN_SH" --gh-direct "$ws"
   record_rc_zero "$RC" "4.6 --gh-direct session"
   ingest_results_file "$ws/results.txt" "gh-direct"
-  if no_new_claude_auth_resources; then
-    record_pass "4.6 --gh-direct started no claude-auth-* sidecar or network"
+  if no_new_vibe_auth_resources; then
+    record_pass "4.6 --gh-direct started no vibe-auth-* sidecar or network"
   else
-    record_fail "4.6 --gh-direct unexpectedly left claude-auth-* resources behind"
+    record_fail "4.6 --gh-direct unexpectedly left vibe-auth-* resources behind"
   fi
 
   # 4.6.b: --gh with no discoverable host token — silent, no sidecar.
@@ -1132,9 +1114,9 @@ phase3_flags() {
   gen_assert_script "$ws/assert.sh" notoken "" ""
   safe_path=$(make_no_gh_path)
   run_wrapped_wait "$log" env -u GH_TOKEN -u GITHUB_TOKEN PATH="$safe_path" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-notoken/assert.sh" \
+    VIBE_DOCKER_RUNTIME=docker \
+    VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
+    VIBE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-notoken/assert.sh" \
     bash "$RUN_SH" --gh "$ws"
   record_rc_zero "$RC" "4.6 --gh with no host token (silent fallback)"
   # Heuristic, not a strict silence check: "error" is specific enough in
@@ -1146,16 +1128,16 @@ phase3_flags() {
     record_pass "4.6 --gh with no host token printed no error-like output"
   fi
   ingest_results_file "$ws/results.txt" "gh-no-token"
-  if no_new_claude_auth_resources; then
+  if no_new_vibe_auth_resources; then
     record_pass "4.6 --gh with no host token started no sidecar or network"
   else
-    record_fail "4.6 --gh with no host token unexpectedly left claude-auth-* resources behind"
+    record_fail "4.6 --gh with no host token unexpectedly left vibe-auth-* resources behind"
   fi
 
   # 4.6.c: --gh and --gh-direct together are rejected before anything starts.
   ws="$SCRATCH/ghtest-conflict" log="$SCRATCH/run3x.log"
   mkdir -p "$ws"
-  run_wrapped_wait "$log" env GH_TOKEN="$FAKE1" CLAUDE_DOCKER_RUNTIME=docker CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
+  run_wrapped_wait "$log" env GH_TOKEN="$FAKE1" VIBE_DOCKER_RUNTIME=docker VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
     bash "$RUN_SH" --gh --gh-direct "$ws"
   if [ "$RC" -ne 0 ]; then
     record_pass "4.6 --gh --gh-direct together exits non-zero ($RC)"
@@ -1168,10 +1150,10 @@ phase3_flags() {
   else
     record_fail "4.6 --gh --gh-direct rejection message doesn't clearly name both flags (see $log)"
   fi
-  if no_new_claude_auth_resources; then
+  if no_new_vibe_auth_resources; then
     record_pass "4.6 --gh --gh-direct started no container or sidecar"
   else
-    record_fail "4.6 --gh --gh-direct unexpectedly left claude-auth-* resources behind"
+    record_fail "4.6 --gh --gh-direct unexpectedly left vibe-auth-* resources behind"
   fi
 
   # 4.6.d: sidecar start failure (unresolvable pinned image) fails closed.
@@ -1180,10 +1162,10 @@ phase3_flags() {
   gen_assert_script "$ws/assert.sh" badimage-sentinel "$FAKE1" ""
   run_wrapped_wait "$log" env \
     GH_TOKEN="$FAKE1" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_PROXY_IMAGE="localhost/does-not-exist:0" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-badimage/assert.sh" \
+    VIBE_DOCKER_RUNTIME=docker \
+    VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
+    VIBE_DOCKER_PROXY_IMAGE="localhost/does-not-exist:0" \
+    VIBE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-badimage/assert.sh" \
     bash "$RUN_SH" --gh "$ws"
   if [ "$RC" -ne 0 ]; then
     record_pass "4.6 sidecar start failure (bad image) exits non-zero ($RC)"
@@ -1197,41 +1179,38 @@ phase3_flags() {
   else
     record_pass "4.6 agent container never started when the sidecar failed to start (fail-closed)"
   fi
-  if no_new_claude_auth_resources; then
-    record_pass "4.6 sidecar start failure left no claude-auth-* resources behind"
+  if no_new_vibe_auth_resources; then
+    record_pass "4.6 sidecar start failure left no vibe-auth-* resources behind"
   else
-    record_fail "4.6 sidecar start failure left claude-auth-* resources behind"
+    record_fail "4.6 sidecar start failure left vibe-auth-* resources behind"
   fi
 }
 
 # ===========================================================================
-# Phase 5 (task 4.1): --gh, --glab and --api through the same sidecar
-# (gh-, glab- and api-auth-proxy). The mock answers for GitHub, GitLab and
-# the model gateway.
+# Phase 5: --gh and --glab through the same sidecar. The mock answers for
+# GitHub and GitLab.
 # ===========================================================================
-phase5_glab_api() {
+phase5_gh_glab() {
   echo
-  echo "=== Phase 5: --gh + --glab + --api through one sidecar ==="
+  echo "=== Phase 5: --gh + --glab through one sidecar ==="
 
-  local ws="$SCRATCH/ghtest-glabapi" log="$SCRATCH/run5.log" home="$SCRATCH/home5"
+  local ws="$SCRATCH/ghtest-ghglab" log="$SCRATCH/run5.log" home="$SCRATCH/home5"
   local pre net sidecar="" pid rc=0
   mkdir -p "$ws" "$home"
-  gen_assert_script "$ws/assert.sh" glabapi "$FAKE_GLAB" "0"
-  pre=$(snapshot_claude_auth_nets)
+  gen_assert_script "$ws/assert.sh" ghglab "$FAKE_GLAB" "0"
+  pre=$(snapshot_vibe_auth_nets)
   # A HOME of its own, so host glab config can't change which host is proxied.
   run_wrapped "$log" env \
     HOME="$home" \
     GH_TOKEN="$FAKE1" \
-    CLAUDE_DOCKER_GH_UPSTREAM="http://ghmock:8080" \
+    VIBE_DOCKER_GH_UPSTREAM="http://ghmock:8080" \
     GITLAB_TOKEN="$FAKE_GLAB" \
     GITLAB_HOST=gitlab.example.test \
-    ANTHROPIC_API_KEY="$FAKE_API" \
-    ANTHROPIC_BASE_URL="http://ghmock:8080/gw" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_GLAB_UPSTREAM="http://ghmock:8080" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-glabapi/assert.sh" \
-    bash "$RUN_SH" --ephemeral --gh --glab --api "$ws" &
+    VIBE_DOCKER_RUNTIME=docker \
+    VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
+    VIBE_DOCKER_GLAB_UPSTREAM="http://ghmock:8080" \
+    VIBE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-ghglab/assert.sh" \
+    bash "$RUN_SH" --ephemeral --gh --glab "$ws" &
   pid=$!
   BG_PIDS+=("$pid")
 
@@ -1239,14 +1218,14 @@ phase5_glab_api() {
   if [ -n "$net" ]; then
     docker network connect --alias ghmock "$net" "$MOCK_CID" 2>/dev/null \
       || record_fail "phase 5: could not attach mock to $net"
-    sidecar="claude-auth-proxy-${net#claude-auth-}"
+    sidecar="vibe-auth-proxy-${net#vibe-auth-}"
     if wait_for_container_running "$sidecar" 15; then
-      record_pass "phase 5: one sidecar '$sidecar' serves --gh, --glab and --api"
+      record_pass "phase 5: one sidecar '$sidecar' serves --gh and --glab"
     else
       record_fail "phase 5: sidecar '$sidecar' never ran"
       sidecar=""
     fi
-    if [ "$({ docker ps --filter "name=^claude-auth-proxy-${net#claude-auth-}$" -q 2>/dev/null || true; } | wc -l | tr -d ' ')" = 1 ]; then
+    if [ "$({ docker ps --filter "name=^vibe-auth-proxy-${net#vibe-auth-}$" -q 2>/dev/null || true; } | wc -l | tr -d ' ')" = 1 ]; then
       record_pass "phase 5: exactly one sidecar container for the session"
     else
       record_fail "phase 5: expected exactly one sidecar for the session"
@@ -1261,12 +1240,12 @@ phase5_glab_api() {
   fi
   wait "$pid" || rc=$?
   record_rc_zero "$rc" "phase 5: run.sh" "$log"
-  ingest_results_file "$ws/results.txt" "gh+glab+api-session"
+  ingest_results_file "$ws/results.txt" "gh+glab-session"
   if [ -f "$SCRATCH/sidecar5.log" ]; then
-    if grep -qF -e "$FAKE_GLAB" -e "$FAKE_API" -e "$FAKE1" "$SCRATCH/sidecar5.log"; then
+    if grep -qF -e "$FAKE_GLAB" -e "$FAKE1" "$SCRATCH/sidecar5.log"; then
       record_fail "phase 5: sidecar audit log leaks a fake credential"
     else
-      record_pass "phase 5: sidecar audit log contains neither fake credential"
+      record_pass "phase 5: sidecar audit log contains no fake credential"
     fi
     if grep -q '"host":"gitlab.example.test"' "$SCRATCH/sidecar5.log"; then
       record_pass "phase 5: audit log names the GitLab host"
@@ -1286,24 +1265,24 @@ phase5_glab_api() {
   else
     record_pass "phase 5: the blocked project DELETE never reached the mock"
   fi
-  if wait_for_absence_claude_auth 20; then
-    record_pass "phase 5: teardown left no claude-auth-* resources"
+  if wait_for_absence_vibe_auth 20; then
+    record_pass "phase 5: teardown left no vibe-auth-* resources"
   else
-    record_fail "phase 5: claude-auth-* leftovers: [$(new_claude_auth_leftovers)]"
+    record_fail "phase 5: vibe-auth-* leftovers: [$(new_vibe_auth_leftovers)]"
   fi
 }
 
 # ===========================================================================
-# Phase 6 (tasks 2.7, 3.6): --glab and --api fail closed, and --glab with no
-# token stays out of the way. Runs after phase 5 has fully torn down.
+# Phase 6 (task 2.7): --glab fails closed on an invalid policy, and --glab with
+# no token stays out of the way. Runs after phase 5 has fully torn down.
 # ===========================================================================
-phase6_glab_api_fail_closed() {
+phase6_glab_fail_closed() {
   echo
-  echo "=== Phase 6: --glab / --api fail-closed and no-token (2.7, 3.6) ==="
+  echo "=== Phase 6: --glab fail-closed and no-token (2.7) ==="
 
   local ws log home RC
 
-  # 2.7.a: an invalid CLAUDE_DOCKER_GLAB_POLICY stops the sidecar, so the
+  # 2.7.a: an invalid VIBE_DOCKER_GLAB_POLICY stops the sidecar, so the
   # agent never starts and the token reaches no container.
   ws="$SCRATCH/ghtest-badpolicy" log="$SCRATCH/run6p.log" home="$SCRATCH/home6p"
   mkdir -p "$ws" "$home"
@@ -1313,15 +1292,15 @@ phase6_glab_api_fail_closed() {
     HOME="$home" \
     GITLAB_TOKEN="$FAKE_GLAB" \
     GITLAB_HOST=gitlab.example.test \
-    CLAUDE_DOCKER_GLAB_POLICY="$SCRATCH/bad-policy.caddy" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-badpolicy/assert.sh" \
+    VIBE_DOCKER_GLAB_POLICY="$SCRATCH/bad-policy.caddy" \
+    VIBE_DOCKER_RUNTIME=docker \
+    VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
+    VIBE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-badpolicy/assert.sh" \
     bash "$RUN_SH" --glab "$ws"
   if [ "$RC" -ne 0 ]; then
-    record_pass "2.7 invalid CLAUDE_DOCKER_GLAB_POLICY exits non-zero ($RC)"
+    record_pass "2.7 invalid VIBE_DOCKER_GLAB_POLICY exits non-zero ($RC)"
   else
-    record_fail "2.7 invalid CLAUDE_DOCKER_GLAB_POLICY exited 0 (expected fatal error)"
+    record_fail "2.7 invalid VIBE_DOCKER_GLAB_POLICY exited 0 (expected fatal error)"
   fi
   # run.sh relays the sidecar's own log lines, prefixed '  | ', after its abort message.
   if grep -q 'sidecar exited during startup' "$log" 2>/dev/null && grep -q '^  | ' "$log" 2>/dev/null; then
@@ -1339,10 +1318,10 @@ phase6_glab_api_fail_closed() {
   else
     record_pass "2.7 invalid policy: the GitLab token appears nowhere in run.sh output"
   fi
-  if wait_for_absence_claude_auth 20; then
-    record_pass "2.7 invalid policy left no claude-auth-* resources behind"
+  if wait_for_absence_vibe_auth 20; then
+    record_pass "2.7 invalid policy left no vibe-auth-* resources behind"
   else
-    record_fail "2.7 invalid policy left claude-auth-* resources: [$(new_claude_auth_leftovers)]"
+    record_fail "2.7 invalid policy left vibe-auth-* resources: [$(new_vibe_auth_leftovers)]"
   fi
 
   # 2.7.b: --glab with no token anywhere: no sidecar, no redirect, no token.
@@ -1353,55 +1332,16 @@ phase6_glab_api_fail_closed() {
     HOME="$home" \
     GITLAB_HOST=gitlab.example.test \
     GLAB_CONFIG_DIR="$home/glab-cli" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-glabnotoken/assert.sh" \
+    VIBE_DOCKER_RUNTIME=docker \
+    VIBE_DOCKER_IMAGE="$TARGET_IMAGE" \
+    VIBE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-glabnotoken/assert.sh" \
     bash "$RUN_SH" --glab "$ws"
   record_rc_zero "$RC" "2.7 --glab with no token"
   ingest_results_file "$ws/results.txt" "glab-no-token"
-  if no_new_claude_auth_resources; then
+  if no_new_vibe_auth_resources; then
     record_pass "2.7 --glab with no token started no sidecar or network"
   else
-    record_fail "2.7 --glab with no token left claude-auth-* resources behind"
-  fi
-
-  # 3.6: --api with an unresolvable proxy image fails closed and names --api-direct.
-  ws="$SCRATCH/ghtest-apibadimage" log="$SCRATCH/run6i.log" home="$SCRATCH/home6i"
-  mkdir -p "$ws" "$home"
-  gen_assert_script "$ws/assert.sh" badimage-sentinel "" ""
-  run_wrapped_wait "$log" env \
-    HOME="$home" \
-    ANTHROPIC_API_KEY="$FAKE_API" \
-    ANTHROPIC_BASE_URL="http://ghmock:8080/gw" \
-    CLAUDE_DOCKER_RUNTIME=docker \
-    CLAUDE_DOCKER_IMAGE="$TARGET_IMAGE" \
-    CLAUDE_DOCKER_PROXY_IMAGE="localhost/does-not-exist:0" \
-    CLAUDE_DOCKER_TEST_ENTRY="exec bash /workspaces/ghtest-apibadimage/assert.sh" \
-    bash "$RUN_SH" --api "$ws"
-  if [ "$RC" -ne 0 ]; then
-    record_pass "3.6 --api with a bad proxy image exits non-zero ($RC)"
-  else
-    record_fail "3.6 --api with a bad proxy image exited 0 (expected fatal error)"
-  fi
-  if grep -qF -- '--api-direct' "$log" 2>/dev/null; then
-    record_pass "3.6 --api failure message names --api-direct"
-  else
-    record_fail "3.6 --api failure message does not name --api-direct (see $log)"
-  fi
-  if [ -f "$ws/should-not-exist" ]; then
-    record_fail "3.6 agent container ran despite the sidecar failing to start (fail-closed regression)"
-  else
-    record_pass "3.6 agent container never started when the --api sidecar failed"
-  fi
-  if log_output_has "$log" "$FAKE_API"; then
-    record_fail "3.6 bad image: the API key appears in run.sh output"
-  else
-    record_pass "3.6 bad image: the API key appears nowhere in run.sh output"
-  fi
-  if wait_for_absence_claude_auth 20; then
-    record_pass "3.6 bad image left no claude-auth-* resources behind"
-  else
-    record_fail "3.6 bad image left claude-auth-* resources: [$(new_claude_auth_leftovers)]"
+    record_fail "2.7 --glab with no token left vibe-auth-* resources behind"
   fi
 }
 
@@ -1429,8 +1369,8 @@ main() {
   phase1_main_session
   phase2_concurrent
   phase3_flags
-  phase5_glab_api
-  phase6_glab_api_fail_closed
+  phase5_gh_glab
+  phase6_glab_fail_closed
   summary
 }
 

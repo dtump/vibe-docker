@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provide `uv`/`uvx` (Python) and `pnpm`/`pnpx` (Node) inside the container for general-purpose user-tier work, with the same pin-and-verify hardening as other binary tools where the ecosystem supports it. Project-specific language runtimes (rust, ruby, etc.) are deliberately excluded — they belong in child images via the `CLAUDE_DOCKER_IMAGE` extension pattern. Go is the one exception, shipped in the image under its own `go-toolchain` capability: the Go distribution is a single self-contained tree with no per-project variant to select, and `go` resolves a project's required toolchain itself.
+Provide `uv`/`uvx` (Python) and `pnpm`/`pnpx` (Node) inside the container for general-purpose user-tier work, with the same pin-and-verify hardening as other binary tools where the ecosystem supports it. Project-specific language runtimes (rust, ruby, etc.) are deliberately excluded — they belong in child images via the `VIBE_DOCKER_IMAGE` extension pattern. Go is the one exception, shipped in the image under its own `go-toolchain` capability: the Go distribution is a single self-contained tree with no per-project variant to select, and `go` resolves a project's required toolchain itself.
 
 ## Requirements
 
@@ -19,7 +19,7 @@ The container image SHALL ship with `uv`, `uvx`, `pnpm`, `pnpx`, `pn`, and `pnx`
 
 #### Scenario: builds on Apple Silicon
 
-- **WHEN** `docker build -t claude-code:local ~/claude-docker` runs on arm64
+- **WHEN** `docker build -t mistral-vibe:local ~/vibe-docker` runs on arm64
 - **THEN** the build succeeds
 - **AND** no package-manager binary fails with exec-format error
 
@@ -63,7 +63,7 @@ Where a tool is unusable without its own install script, the build MAY invoke th
 #### Scenario: pnpm shares the existing --ignore-scripts invocation
 
 - **WHEN** the Dockerfile installs `pnpm` via npm
-- **THEN** the install runs as part of a single `npm install -g --ignore-scripts` invocation alongside `claude-code` and `openspec`
+- **THEN** the install runs as part of a single `npm install -g --ignore-scripts` invocation alongside `openspec`
 - **AND** no separate `npm install` invocation without `--ignore-scripts` exists in the Dockerfile
 
 #### Scenario: hand-invoked install scripts are enumerated, not a blanket exception
@@ -127,7 +127,7 @@ These scenarios describe what the documentation says, not which file says it.
 
 - **GIVEN** `tfenv install` writes to `/opt/tfenv/versions/`, which the documentation notes does not persist across `docker run --rm`
 - **WHEN** a reader compares that to pnpm's provisioning
-- **THEN** the documentation states that provisioned runtimes and package managers are stored under the container's home directory — in pnpm's package-manager store and cache — which is inside the `claude-code-root` named volume
+- **THEN** the documentation states that provisioned runtimes and package managers are stored under the container's home directory — in pnpm's package-manager store and cache — which is inside the `vibe-root` named volume
 - **AND** it states that they therefore survive container exit and are reused by later sessions, unlike the `tfenv install` downloads
 
 #### Scenario: bundled CLIs list includes new tools
@@ -135,113 +135,6 @@ These scenarios describe what the documentation says, not which file says it.
 - **WHEN** a reader inspects the preinstalled-CLI list at the top of the project's front-page documentation
 - **THEN** the line names `uv`, `pnpm`, and `tfenv` alongside the existing entries
 - **AND** alias bins that ship with those tools (`uvx`; `pnpx`, `pn`, `pnx`) are documented under the command they alias rather than enumerated in that line, which lists one entry per tool
-
-### Requirement: Private registry passthrough via --registry
-
-`run.sh` SHALL provide a `--registry` opt-in flag that surfaces the host's
-native `uv`, `npm`/`pnpm`, and pip-based (`pip`/`pipenv`) private-registry
-configuration into the container using the package managers' own discovery
-mechanisms, rather than any wrapper-specific configuration. When `--registry`
-is NOT passed, no registry configuration and no registry credentials SHALL
-reach the container, and the package managers SHALL fall back to their built-in
-public defaults (the npm registry and PyPI). The flag SHALL compose with all
-other flags and SHALL NOT require `--aws`.
-
-This requirement governs registry *configuration* only. The image SHALL NOT be
-required to ship `pip`, `pipenv`, or a Python runtime for this requirement to be
-met; the forwarded pip configuration applies to whatever pip executes inside the
-container (e.g. via `uvx pipenv` or a child image).
-
-When `--registry` is set, `run.sh`:
-
-- SHALL mount read-only, and only when present on the host (a missing file is a
-  silent no-op), each of: the host npm config (`~/.npmrc`, or the file named by
-  `npm_config_userconfig` / `NPM_CONFIG_USERCONFIG` when set) at `/root/.npmrc`,
-  the platform-appropriate uv config — `%APPDATA%\uv\uv.toml` on Windows (Git
-  Bash), `~/.config/uv/uv.toml` on Linux/macOS and as the fallback everywhere —
-  at `/root/.config/uv/uv.toml`, and the platform-appropriate pip config —
-  `~/.config/pip/pip.conf` on Linux, `~/Library/Application Support/pip/pip.conf`
-  on macOS, or `%APPDATA%\pip\pip.ini` on Windows (Git Bash; same INI format
-  under pip's Windows file name) — at `/root/.config/pip/pip.conf`.
-- SHALL NOT mount `~/.netrc`. Because netrc is a machine-keyed store that
-  commonly holds credentials for hosts unrelated to the package registry,
-  forwarding the whole file into a full-egress container is too broad; netrc-
-  based registry auth is intentionally not supported by this flag (registry
-  auth belongs in npmrc/pip.conf, the index URL, or `UV_INDEX_*_PASSWORD`).
-- SHALL forward, only when set on the host, the native env vars
-  `npm_config_registry`, `NPM_CONFIG_REGISTRY`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`,
-  `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_INDEX`,
-  `UV_KEYRING_PROVIDER`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`,
-  `PIP_TRUSTED_HOST`, and `PIPENV_PYPI_MIRROR`. It SHALL NOT forward `UV_NETRC`
-  (it points uv at a netrc file that is no longer mounted).
-- SHALL additionally forward every set host environment variable whose name
-  matches `UV_INDEX_*_USERNAME` or `UV_INDEX_*_PASSWORD`, so uv's per-index
-  credential variables (whose names derive from a user-chosen index name) reach
-  the container without being individually enumerated, while other `UV_*`
-  variables are NOT blanket-forwarded.
-- SHALL append `registry` to the statusline opt-in tag list.
-
-All mounted config files SHALL be read-only, so the container cannot mutate host
-registry credentials and a `--registry` session cannot persist registry
-credential state into the `claude-code-root` volume.
-
-Resolution policy SHALL be whatever the host configuration expresses: the
-wrapper imposes none of its own. Setting a default registry/index in the host
-config natively replaces the public default (confining resolution to the
-configured feed), and re-admitting public registries is expressed in the host's
-own native config.
-
-#### Scenario: no flag means no registry config reaches the container
-
-- **GIVEN** the host has a `~/.npmrc` with a private `registry=` line and exports `UV_DEFAULT_INDEX`
-- **WHEN** the user runs `claude-docker ~/repo` without `--registry`
-- **THEN** `/root/.npmrc` inside the container does not contain the host's private registry config
-- **AND** `echo $UV_DEFAULT_INDEX` inside the container is empty
-- **AND** `pnpm config get registry` returns the public npm default
-
-#### Scenario: --registry mounts host npmrc read-only
-
-- **GIVEN** the host has a `~/.npmrc` configuring a private registry with an auth token
-- **WHEN** the user runs `claude-docker --registry ~/repo`
-- **THEN** `/root/.npmrc` inside the container contains the host file's contents
-- **AND** `pnpm config get registry` returns the private registry URL
-- **AND** a write to `/root/.npmrc` from inside the container fails with EROFS
-
-#### Scenario: --registry mounts host pip config and forwards PIP_* env
-
-- **GIVEN** the host has a pip config (at its platform-appropriate user location) setting a private `index-url`, and exports `PIP_INDEX_URL`
-- **WHEN** the user runs `claude-docker --registry ~/repo`
-- **THEN** `/root/.config/pip/pip.conf` inside the container contains the host pip config
-- **AND** `echo $PIP_INDEX_URL` inside the container prints the host value
-- **AND** a pip-based install (e.g. via `uvx pipenv`) resolves against the private index
-- **AND** without `--registry`, `/root/.config/pip/pip.conf` is absent and `echo $PIP_INDEX_URL` is empty
-
-#### Scenario: --registry forwards uv index env vars including dynamic credential vars
-
-- **GIVEN** the host exports `UV_DEFAULT_INDEX=https://example.test/simple/`, `UV_INDEX_INTERNAL_USERNAME=aws`, and `UV_INDEX_INTERNAL_PASSWORD=tok`
-- **WHEN** the user runs `claude-docker --registry ~/repo`
-- **THEN** all three variables are present in the container environment
-- **AND** other unrelated `UV_*` host variables (e.g. `UV_CACHE_DIR`) are not forwarded
-
-#### Scenario: --registry is silent when no host registry config exists
-
-- **GIVEN** the host has no `~/.npmrc`, no `~/.netrc`, no `~/.config/uv/uv.toml`, and none of the forwarded env vars set
-- **WHEN** the user runs `claude-docker --registry ~/repo`
-- **THEN** the container starts without error
-- **AND** the package managers fall back to their public defaults
-
-#### Scenario: statusline tag reflects the opt-in
-
-- **WHEN** the user runs `claude-docker --registry ~/repo`
-- **THEN** the statusline `docker:` prefix includes `registry` in the opt-in tag list
-
-#### Scenario: --registry finds Windows uv and pip config under %APPDATA%
-
-- **GIVEN** `run.sh` runs under Git Bash on Windows
-- **AND** the host has `%APPDATA%\uv\uv.toml` and `%APPDATA%\pip\pip.ini`
-- **WHEN** the user runs `claude-docker --registry ~/repo`
-- **THEN** `/root/.config/uv/uv.toml` inside the container contains the host `uv.toml`
-- **AND** `/root/.config/pip/pip.conf` inside the container contains the host `pip.ini`
 
 ### Requirement: pnpm runs its native binary, asserted at build time
 
@@ -276,3 +169,89 @@ The assertion SHALL observe the installed bin directly — that the file at pnpm
 - **WHEN** `pnpm` runs in the built image
 - **THEN** the binary linked at build time is used
 - **AND** no pnpm binary is downloaded at runtime, so the image ships no unpinned, unverified pnpm executable path
+
+### Requirement: Private package registries via --registry
+
+`run.sh` SHALL provide a `--registry` opt-in that surfaces the host's native `uv`, `npm`/`pnpm` and pip registry configuration into the container through the package managers' own discovery mechanisms, with no wrapper-specific config. Without it, no registry configuration or credential SHALL reach the container. The flag SHALL compose with every other flag, SHALL NOT require `--aws`, and SHALL add `registry` to `VIBE_DOCKER_FLAGS`.
+
+#### Scenario: no flag means no registry config reaches the container
+
+- **GIVEN** the host has a `~/.npmrc` with a private `registry=` line and exports `UV_DEFAULT_INDEX`
+- **WHEN** the user runs `vibe-docker ~/repo` without `--registry`
+- **THEN** `/root/.npmrc` inside the container does not contain the host's private registry config
+- **AND** `echo $UV_DEFAULT_INDEX` inside the container is empty
+- **AND** `pnpm config get registry` returns the public npm default
+
+#### Scenario: --registry is silent when no host registry config exists
+
+- **GIVEN** the host has no `~/.npmrc`, no `~/.netrc`, no `~/.config/uv/uv.toml`, and none of the forwarded env vars set
+- **WHEN** the user runs `vibe-docker --registry ~/repo`
+- **THEN** the container starts without error
+- **AND** the package managers fall back to their public defaults
+
+#### Scenario: VIBE_DOCKER_FLAGS reflects the opt-in
+
+- **WHEN** the user runs `vibe-docker --registry ~/repo`
+- **THEN** `VIBE_DOCKER_FLAGS` inside the container includes `registry`
+
+### Requirement: --registry mounts native registry config files read-only
+
+Under `--registry`, `run.sh` SHALL mount read-only, when present (a missing file is a silent no-op): the npm config (`~/.npmrc`, or the file `npm_config_userconfig` / `NPM_CONFIG_USERCONFIG` names) at `/root/.npmrc`, the uv config at `/root/.config/uv/uv.toml`, and the pip config at `/root/.config/pip/pip.conf`, each read from its platform location. It SHALL NOT mount `~/.netrc`, which holds credentials for unrelated hosts.
+
+#### Scenario: --registry mounts host npmrc read-only
+
+- **GIVEN** the host has a `~/.npmrc` configuring a private registry with an auth token
+- **WHEN** the user runs `vibe-docker --registry ~/repo`
+- **THEN** `/root/.npmrc` inside the container contains the host file's contents
+- **AND** `pnpm config get registry` returns the private registry URL
+- **AND** a write to `/root/.npmrc` from inside the container fails with EROFS
+
+#### Scenario: uv and pip config come from their platform locations
+
+- **GIVEN** a macOS host with `~/.config/uv/uv.toml` and `~/Library/Application Support/pip/pip.conf`, or a Linux host with `~/.config/uv/uv.toml` and `~/.config/pip/pip.conf`
+- **WHEN** the user runs `vibe-docker --registry ~/repo`
+- **THEN** `/root/.config/uv/uv.toml` and `/root/.config/pip/pip.conf` inside the container contain the host files
+
+#### Scenario: --registry finds Windows uv and pip config under %APPDATA%
+
+- **GIVEN** `run.sh` runs under Git Bash on Windows
+- **AND** the host has `%APPDATA%\uv\uv.toml` and `%APPDATA%\pip\pip.ini`
+- **WHEN** the user runs `vibe-docker --registry ~/repo`
+- **THEN** `/root/.config/uv/uv.toml` inside the container contains the host `uv.toml`
+- **AND** `/root/.config/pip/pip.conf` inside the container contains the host `pip.ini`
+
+#### Scenario: netrc is never mounted
+
+- **GIVEN** the host has a `~/.netrc`
+- **WHEN** the user runs `vibe-docker --registry ~/repo`
+- **THEN** no `.netrc` from the host is present in the container
+
+### Requirement: --registry forwards native registry env vars
+
+Under `--registry`, `run.sh` SHALL forward, when set on the host, `npm_config_registry`, `NPM_CONFIG_REGISTRY`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`, `UV_INDEX_URL`, `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL`, `UV_INDEX`, `UV_KEYRING_PROVIDER`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`, `PIP_TRUSTED_HOST`, `PIPENV_PYPI_MIRROR`, and every `UV_INDEX_*_USERNAME` / `UV_INDEX_*_PASSWORD`. Other `UV_*` variables, `UV_NETRC` included, SHALL NOT be forwarded.
+
+#### Scenario: --registry forwards uv index env vars including dynamic credential vars
+
+- **GIVEN** the host exports `UV_DEFAULT_INDEX=https://example.test/simple/`, `UV_INDEX_INTERNAL_USERNAME=aws`, and `UV_INDEX_INTERNAL_PASSWORD=tok`
+- **WHEN** the user runs `vibe-docker --registry ~/repo`
+- **THEN** all three variables are present in the container environment
+- **AND** other unrelated `UV_*` host variables (e.g. `UV_CACHE_DIR`) are not forwarded
+
+#### Scenario: --registry mounts host pip config and forwards PIP_* env
+
+- **GIVEN** the host has a pip config (at its platform-appropriate user location) setting a private `index-url`, and exports `PIP_INDEX_URL`
+- **WHEN** the user runs `vibe-docker --registry ~/repo`
+- **THEN** `/root/.config/pip/pip.conf` inside the container contains the host pip config
+- **AND** `echo $PIP_INDEX_URL` inside the container prints the host value
+- **AND** a pip-based install (e.g. via `uvx pipenv`) resolves against the private index
+- **AND** without `--registry`, `/root/.config/pip/pip.conf` is absent and `echo $PIP_INDEX_URL` is empty
+
+### Requirement: Registry resolution policy comes from the host config
+
+The wrapper SHALL impose no resolution policy of its own: a default registry or index set in the host's native config replaces the public default, and re-admitting public registries is expressed there too. The image SHALL NOT need `pip`, `pipenv` or a Python runtime on PATH for `--registry`; the forwarded pip config applies to whatever pip runs in the container (e.g. via `uvx pipenv` or a child image).
+
+#### Scenario: A default index in the host config confines resolution
+
+- **GIVEN** the host's `uv.toml` sets a private default index and no other index
+- **WHEN** the user runs `vibe-docker --registry ~/repo` and `uv pip install` inside the container
+- **THEN** uv resolves against the private index only

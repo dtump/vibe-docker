@@ -10,7 +10,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "${HERE}/lib.sh"
 
-MARKER='<!-- managed by claude-docker draft-release -->'
+MARKER='<!-- managed by vibe-docker draft-release -->'
 
 fresh_fixtures
 printf '%s\n' '[{"id":1,"tag_name":"v3.3.0","draft":false,"prerelease":false,"body":"x","html_url":"u1"}]' > "${F}/releases.json"

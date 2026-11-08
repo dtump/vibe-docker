@@ -41,7 +41,7 @@ jobs:
         # so the tests exercise exactly that Caddy with no second pin to keep.
         run: |
           set -euo pipefail
-          img=$(sed -n 's/^PROXY_IMAGE="\${CLAUDE_DOCKER_PROXY_IMAGE:-\(.*\)}"$/\1/p' run.sh)
+          img=$(sed -n 's/^PROXY_IMAGE="\${VIBE_DOCKER_PROXY_IMAGE:-\(.*\)}"$/\1/p' run.sh)
           test -n "$img"
           cid=$(docker create "$img")
           docker cp "$cid:/usr/bin/caddy" "$RUNNER_TEMP/caddy"
@@ -53,7 +53,7 @@ jobs:
         # stdlib unittest on the runner's preinstalled python3 — no install,
         # no third-party action (the suite imports only the standard library).
         env:
-          CLAUDE_DOCKER_TEST_REQUIRE_CADDY: "1"
+          VIBE_DOCKER_TEST_REQUIRE_CADDY: "1"
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: BATS unit tests — shell scripts
@@ -109,15 +109,16 @@ jobs:
           # image. Build is amd64-only (single-arch load is fine); arm64
           # coverage relies on the maintainers' local builds for now.
           load: true
-          tags: claude-docker:ci
+          tags: vibe-docker:ci
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=min
 
       - name: Smoke test — every pinned CLI reports its pinned version
         # A successful install says nothing about whether the executable runs:
-        # claude-code 2.1.x can install cleanly and leave `claude` a stub that
-        # errors at exec time (see Dockerfile). Nothing else in CI invokes a
+        # pnpm can install cleanly and leave a placeholder that runs through
+        # node, and `vibe` is a Python launcher that execs a bundled native TUI
+        # (see Dockerfile). Nothing else in CI invokes a
         # pinned tool, so without this a pin bump can ship a broken or
         # version-mismatched CLI on green.
         # This step must live in docker-build: it is the only job whose local
@@ -126,7 +127,7 @@ jobs:
 
       - name: Cross-platform smoke (Linux)
         # Drives smoke.sh across a matrix of cells, all reusing the already-loaded
-        # claude-docker:ci image from the build step above.  Do NOT move this to a
+        # vibe-docker:ci image from the build step above.  Do NOT move this to a
         # separate job — a separate job gets a blank local daemon and cannot reuse
         # the image loaded by the build step.
         #
@@ -134,7 +135,7 @@ jobs:
         #   1. runner-uid/cold/no-optins     — baseline privilege-drop to runner UID
         #   2. runner-uid/cold/aws           — AWS credential opt-in
         #   3. runner-uid/cold/glab          — GitLab credential opt-in
-        #   4. runner-uid/cold/aws+glab+tfe+api+az — all smoke opt-ins combined
+        #   4. runner-uid/cold/aws+glab+tfe+mistral+az — all smoke opt-ins combined
         #   5. runner-uid/warm               — warm volume (HOST_UID-owned /root traversal)
         #   6. uid-501/cold/no-optins        — macOS-style UID (<1000, below Ubuntu floor)
         #   7. uid-0/cold/no-optins          — root-legacy path (HOST_UID=0 → exec directly)
@@ -142,12 +143,12 @@ jobs:
         #   9. runner-uid/ro/no-optins       — read-only workspace (EROFS robustness)
         run: |
           set -euo pipefail
-          export IMAGE=claude-docker:ci
+          export IMAGE=vibe-docker:ci
           RUNNER_UID=$(id -u)
 
           run_cell() {
             echo "--- Cell: $* ---"
-            IMAGE=claude-docker:ci bash tests/smoke/smoke.sh "$@"
+            IMAGE=vibe-docker:ci bash tests/smoke/smoke.sh "$@"
           }
 
           # 1. Baseline: runner UID, cold volume, no opt-ins.
@@ -159,8 +160,9 @@ jobs:
           # 3. GitLab opt-in.
           run_cell --uid="${RUNNER_UID}" --optins=glab --volstate=cold --ephemeral=0
 
-          # 4. All smoke opt-ins combined (api: endpoint env + private CA install).
-          run_cell --uid="${RUNNER_UID}" --optins=aws,glab,tfe,api,az --volstate=cold --ephemeral=0
+          # 4. All smoke opt-ins combined (mistral: MISTRAL_API_KEY forwarded;
+          #    az: private CA install).
+          run_cell --uid="${RUNNER_UID}" --optins=aws,glab,tfe,mistral,az --volstate=cold --ephemeral=0
 
           # 5. Warm volume: first run populates the named volume, second run
           #    traverses the now HOST_UID-owned 0700 /root (exercises CAP_DAC_READ_SEARCH).
@@ -170,7 +172,7 @@ jobs:
           run_cell --uid=501 --volstate=cold --ephemeral=0
 
           # 7. Root-legacy path: HOST_UID=0 → entrypoint skips useradd+runuser and
-          #    exec's claude directly as container root.
+          #    exec's vibe directly as container root.
           run_cell --uid=0 --volstate=cold --ephemeral=0
 
           # 8. Ephemeral mode: no named volumes.
@@ -186,100 +188,13 @@ jobs:
           run_cell --uid=501 --gid=501 --volstate=cold --ephemeral=0
 
       - name: Auth-proxy integration harness
-        # Drives run.sh end to end against mock GitHub, GitLab and API
-        # upstreams with fake credentials. Lives in docker-build for the same
+        # Drives run.sh end to end against mock GitHub and GitLab upstreams
+        # with fake credentials. Lives in docker-build for the same
         # reason as the smoke steps: it needs the image loaded above.
         env:
-          CLAUDE_DOCKER_IMAGE: claude-docker:ci
+          VIBE_DOCKER_IMAGE: vibe-docker:ci
           GH_PROXY_IT_REQUIRE_DOCKER: "1"
         run: bash tests/integration/gh-proxy-integration.sh
-
-      - name: API egress lock smoke (run.sh end-to-end)
-        # The --egress-lock lives entirely in run.sh (internal network, squid
-        # sidecar, proxy env, teardown). Unlike the cells above, these drive
-        # run.sh itself with the real docker, so the sidecars and their teardown
-        # are exercised as well. They prove that the endpoint and other hosts
-        # are reachable, a model provider is refused, and, the load-bearing
-        # part, that a proxy-unaware client has no route out at all. Same job as
-        # the build for the same reason as the step above.
-        #   1. plain  — endpoint checks, provider denies, DNS, saved log, teardown
-        #   2. --gh   — composition: GitHub traffic via squid → gh sidecar
-        #   3. --endpoint-port — an endpoint on a non-80/443 port is allowed,
-        #      for that endpoint only
-        #   4. --allowlist — --egress-allowlist: listed hosts only, --tfe's
-        #      host refused, DNS probes pass, git clone through the gh sidecar
-        #      with the workflow's token (read-only, a public repo)
-        env:
-          EGRESS_SMOKE_GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          IMAGE=claude-docker:ci bash tests/smoke/egress.sh
-          IMAGE=claude-docker:ci bash tests/smoke/egress.sh --gh
-          IMAGE=claude-docker:ci bash tests/smoke/egress.sh --endpoint-port
-          IMAGE=claude-docker:ci bash tests/smoke/egress.sh --allowlist
-
-      - name: Egress allowlist squid harness (real squid)
-        # The --egress-allowlist rules against the squid image run.sh built
-        # in the step above, with a stub resolver that logs every query:
-        # allow/refuse per rule, no DNS query for a name off the list, and
-        # `squid -k parse` on every config the run.sh BATS suite generates.
-        # Only the tests that write those configs run here (the whole suite
-        # runs in validate); the last one checks the set matches
-        # expected-configs.txt. Their passing output is noise here, but a
-        # failure prints the failing tests.
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bats
-          bats -f "^gen_egress_squid_conf: |squid harness's expected config list" \
-            tests/bats/run.bats > "$RUNNER_TEMP/run-bats.tap" \
-            || { grep -A20 '^not ok' "$RUNNER_TEMP/run-bats.tap" \
-                   || tail -n 50 "$RUNNER_TEMP/run-bats.tap"; exit 1; }
-          bash tests/egress-proxy/harness.sh
-
-      - name: Managed settings precedence (Claude Code in the image)
-        # --egress-lock pins Claude Code's endpoint with managed settings. This
-        # proves, against the image's pinned claude-code, that they beat every
-        # project override (settings.json, settings.local.json, --settings) and
-        # every backend switch, and fails on a backend switch in the bundle
-        # that the managed settings don't pin off. --network none; loopback only.
-        run: IMAGE=claude-docker:ci bash tests/integration/managed-settings-precedence.sh
-
-      - name: Tag the --egress-lock proxy image for scanning
-        # run.sh built it during the egress smoke above, named by its
-        # Containerfile's checksum. Exactly one must exist on this fresh runner.
-        run: |
-          set -euo pipefail
-          refs=$(docker images --format '{{.Repository}}:{{.Tag}}' claude-docker-egress-proxy)
-          [ "$(printf '%s\n' "$refs" | grep -c .)" = 1 ] || { echo "expected one egress proxy image, got: $refs"; exit 1; }
-          docker tag "$refs" claude-docker-egress-proxy:ci
-
-      # The proxy image gets the same two passes as the agent image below, so
-      # squid's CVEs gate like every other package's (openspec/changes/archive/2026-10-09-egress-lock/design.md D5).
-      - name: Vulnerability scan (egress proxy) — HIGH/CRITICAL, advisory (includes unfixed)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: image
-          scan-ref: claude-docker-egress-proxy:ci
-          severity: HIGH,CRITICAL
-          scanners: vuln
-          exit-code: 0
-          trivyignores: .trivyignore
-
-      - name: Vulnerability scan (egress proxy) — HIGH/CRITICAL with a fix available (gate)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          # Trivy and its DB are set up once, by the egress proxy's advisory scan,
-          # the first Trivy step in this job; keep that one first.
-          skip-setup-trivy: true
-          cache: false
-          scan-type: image
-          scan-ref: claude-docker-egress-proxy:ci
-          severity: HIGH,CRITICAL
-          scanners: vuln
-          ignore-unfixed: true
-          exit-code: 1
-          trivyignores: .trivyignore
 
       # Known-CVE scanning of the image, in two passes over the same artifact.
       # Like the steps above, these must live in docker-build: Trivy resolves an
@@ -311,12 +226,8 @@ jobs:
         # step with a failure annotation while it is doing exactly its job.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          # Trivy and its DB are set up once, by the egress proxy's advisory scan,
-          # the first Trivy step in this job; keep that one first.
-          skip-setup-trivy: true
-          cache: false
           scan-type: image
-          scan-ref: claude-docker:ci
+          scan-ref: vibe-docker:ci
           severity: HIGH,CRITICAL
           scanners: vuln
           exit-code: 0
@@ -338,12 +249,11 @@ jobs:
         # weaken severity or exit-code here.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          # Trivy and its DB are set up once, by the egress proxy's advisory scan,
-          # the first Trivy step in this job; keep that one first.
+          # Trivy and its DB are set up once, by the advisory scan above.
           skip-setup-trivy: true
           cache: false
           scan-type: image
-          scan-ref: claude-docker:ci
+          scan-ref: vibe-docker:ci
           severity: HIGH,CRITICAL
           scanners: vuln
           ignore-unfixed: true
@@ -372,7 +282,7 @@ jobs:
       - name: Vulnerability scan (grype) — image, HIGH/CRITICAL incl. unfixed (gate)
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
-          image: claude-docker:ci
+          image: vibe-docker:ci
           config: .grype.yaml
           severity-cutoff: high
           only-fixed: false

@@ -5,14 +5,14 @@
 **Report privately, not as a public issue.** Use GitHub private vulnerability
 reporting:
 
-> **[Report a vulnerability](https://github.com/schubergphilis/claude-docker/security/advisories/new)**
+> **[Report a vulnerability](https://github.com/dtump/vibe-docker/security/advisories/new)**
 
 That opens a draft advisory visible only to you and the maintainers. If you
 cannot use it, open a public issue containing *only* a request for a private
 channel — no details.
 
 Please include the commit or release you tested, the wrapper flags in use
-(`--yolo`, `--aws`, `--gh`, `--ephemeral`, …), which container runtime and host
+(`--yolo`, `--aws`, `--gh`, `--mistral`, `--ephemeral`, …), which container runtime and host
 OS, and a description of the weakness and its impact. Describe the *class* of
 problem rather than attaching a working exploit, and never include real
 credentials, tokens, or transcript content — a path, a mount mode, or a config
@@ -45,17 +45,12 @@ GHCR](docs/installation.md#prebuilt-image-from-ghcr).
 
 In scope: the `run.sh` wrapper, `entrypoint.sh`, the `Dockerfile` and the image
 it produces, the credential opt-in model, the privilege drop and capability set,
-the `gh` auth-proxy sidecar, the `--egress-lock` (model traffic reaching
-anything but `ANTHROPIC_BASE_URL`, a connection that leaves the session's
-internal network other than through the proxy or to the auth-proxy sidecar's
-fixed upstreams, reaching metadata, or leaking data over DNS, in an
-`--egress-lock` session), and the persistent named-volume model.
+the `gh` and `glab` auth-proxy sidecar, and the persistent named-volume model.
 
 Out of scope, because they are documented properties rather than defects — read
 the [threat model](docs/security.md#threat-model) before reporting:
 
 - **Full outbound network.** A session can reach anything the host can.
-  `--egress-lock` restricts model traffic only, and logs the rest.
 - **Runtime code-fetch.** `npx`, `pnpm dlx`, `uvx`, `tfenv install` and the Go
   toolchain fetch and execute third-party code on demand, by design.
 - **Workspaces are read-write** unless `--ro` (all) or `--ro=PATH` (that one)
@@ -63,11 +58,11 @@ the [threat model](docs/security.md#threat-model) before reporting:
   there can still drive writes to the writable workspaces.
 - **Opted-in credentials are readable in-session.** That is what the flag does;
   the container is a blast-radius reduction, not a secret boundary.
-- **State persists across sessions** in the `claude-code-root` and
-  `claude-code-home` named volumes unless `--ephemeral` is passed — including
+- **State persists across sessions** in the `vibe-root` and
+  `vibe-home` named volumes unless `--ephemeral` is passed — including
   config a session plants for later sessions to execute (see the [threat
   model](docs/security.md#threat-model)).
-- **`--yolo` / `--dangerously-skip-permissions` is a deliberate mode**, not a
+- **`--yolo` (vibe's `--auto-approve`) is a deliberate mode**, not a
   misconfiguration.
 - **The container is not a full sandbox.** It narrows blast radius compared with
   running the agent directly on the host; it does not contain a determined
@@ -76,7 +71,7 @@ the [threat model](docs/security.md#threat-model) before reporting:
 A finding that a *documented* boundary does not hold as documented is in scope
 and welcome — that is different from reporting the documented boundary itself.
 
-Vulnerabilities in Claude Code, or in the bundled third-party CLIs (`gh`,
+Vulnerabilities in Mistral Vibe, or in the bundled third-party CLIs (`gh`,
 `glab`, `aws`, `terraform`, `uv`, `pnpm`, …), belong upstream with their
 respective projects. Known-vulnerable OS and language packages in the image are
 tracked by the Trivy scans in the repository's CI workflows and, where a finding
