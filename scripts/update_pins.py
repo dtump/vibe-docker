@@ -540,7 +540,12 @@ def write_fragment(stage: Path, name: str, version: str):
 # hash of every published file of each pinned version, so the one lock installs
 # on amd64 and arm64 alike. The extra az inputs pin deps azure-cli-core leaves
 # loose; mistral-vibe already pins every dependency with ==.
-AZ_LOCK_INPUT = ["python-dateutil", "msrest", "azure-common"]
+# The azure-devops extension installs with --no-deps and declares only distro,
+# yet imports dateutil (parser, tz) and six (credential store, exception
+# handler). python-dateutil 4 drops six and nothing declares 4 compatible, so
+# the lock stays on 2.x and names six itself; lift the cap once an extension
+# release is tested against dateutil 4.
+AZ_LOCK_INPUT = ["python-dateutil<3", "six", "msrest", "azure-common"]
 LOCKS = {
     "az": ("az-requirements.txt", lambda v: [f"azure-cli-core=={v}", *AZ_LOCK_INPUT]),
     "vibe": ("vibe-requirements.txt", lambda v: [f"mistral-vibe=={v}"]),
