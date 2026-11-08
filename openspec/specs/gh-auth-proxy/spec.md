@@ -8,7 +8,7 @@ Keep the host's GitHub token out of the agent container by holding it in a per-s
 
 ### Requirement: GitHub token is isolated from the agent container
 
-When `--gh` is passed and a host token is found, the token SHALL be provided only to the sidecar proxy container's environment. It SHALL NOT be present in the agent container's environment, process table, or filesystem, and SHALL NOT be recoverable via `gh auth token` inside the agent container. The agent container SHALL receive the fixed placeholder `GH_TOKEN=claude-docker-proxy` so `gh` treats itself as authenticated; the sidecar SHALL replace any client-supplied `Authorization` header with the real one, so the placeholder value never reaches GitHub.
+When `--gh` is passed and a host token is found, the token SHALL be provided only to the sidecar proxy container's environment. It SHALL NOT be present in the agent container's environment, process table, or filesystem, and SHALL NOT be recoverable via `gh auth token` inside the agent container. The agent container SHALL receive the fixed placeholder `GH_TOKEN=vibe-docker-proxy` so `gh` treats itself as authenticated; the sidecar SHALL replace any client-supplied `Authorization` header with the real one, so the placeholder value never reaches GitHub.
 
 One request class is exempt from that injection. On `github.com`, a `HEAD` request whose path matches `^/[^/]+/[^/]+/releases/download/.+` SHALL be forwarded with the `Authorization` header **removed** rather than replaced, so it reaches GitHub anonymously. The header SHALL be deleted, not merely left uninjected: GitHub selects a release asset's CDN on the *presence* of an `Authorization` header regardless of its value, so forwarding the client's placeholder would have the same effect as forwarding the real token. A `HEAD` carrying any credential is answered with a redirect to a legacy `objects.githubusercontent.com` pre-signed URL that then fails `401` for every method, which makes release-asset URLs unusable for any client that probes with `HEAD` before `GET`.
 
@@ -17,8 +17,8 @@ The exemption SHALL be scoped to that method and path only. `GET` on the same pa
 #### Scenario: Token not visible inside the agent container
 
 - **GIVEN** the host has a GitHub token (env or `gh auth token`)
-- **WHEN** user runs `claude-docker --gh ~/repo`
-- **THEN** `echo $GH_TOKEN` inside the agent container prints `claude-docker-proxy`
+- **WHEN** user runs `vibe-docker --gh ~/repo`
+- **THEN** `echo $GH_TOKEN` inside the agent container prints `vibe-docker-proxy`
 - **AND** `gh auth token` inside the agent container does not output the host token
 - **AND** the host token appears nowhere in `/proc/1/environ` inside the agent container
 
@@ -74,51 +74,51 @@ Because the intercepted hostnames are presented with a certificate chaining to t
 
 ### Requirement: Sessions are isolated and cleaned up
 
-Each `run.sh` invocation with an active sidecar SHALL create its own container network and sidecar with names unique to the invocation (`claude-gh-<id>` / `claude-gh-proxy-<id>`). Concurrent sessions SHALL NOT share networks, sidecars, CAs, or token copies. On exit, `run.sh` SHALL remove the session's sidecar and network via the existing EXIT trap.
+Each `run.sh` invocation with an active sidecar SHALL create its own container network and sidecar with names unique to the invocation (`vibe-auth-<id>` / `vibe-auth-proxy-<id>`). Concurrent sessions SHALL NOT share networks, sidecars, CAs, or token copies. On exit, `run.sh` SHALL remove the session's sidecar and network via the existing EXIT trap.
 
 #### Scenario: Two concurrent sessions do not interfere
 
-- **GIVEN** two simultaneous `claude-docker --gh` sessions
+- **GIVEN** two simultaneous `vibe-docker --gh` sessions
 - **WHEN** both perform authenticated GitHub operations
 - **THEN** each session's traffic transits only its own sidecar
 - **AND** the two sidecars hold independent CAs (roots differ)
 
 #### Scenario: Teardown removes session resources
 
-- **WHEN** a `claude-docker --gh` session exits
+- **WHEN** a `vibe-docker --gh` session exits
 - **THEN** its sidecar container and session network no longer exist
 
 ### Requirement: Works out of the box, fails closed
 
-The sidecar SHALL run a digest-pinned upstream Caddy image (override: `CLAUDE_DOCKER_PROXY_IMAGE`) requiring no user-built image and no manual configuration beyond the existing `--gh` flag. If no host token is found, `run.sh` SHALL skip the sidecar silently and behave as the legacy no-token fallback. If a token was found but the sidecar fails to start or its CA cannot be retrieved within the startup timeout, `run.sh` SHALL tear down the session resources and exit with an actionable error; it SHALL NOT silently fall back to forwarding the real token into the agent container.
+The sidecar SHALL run a digest-pinned upstream Caddy image (override: `VIBE_DOCKER_PROXY_IMAGE`) requiring no user-built image and no manual configuration beyond the existing `--gh` flag. If no host token is found, `run.sh` SHALL skip the sidecar silently and behave as the legacy no-token fallback. If a token was found but the sidecar fails to start or its CA cannot be retrieved within the startup timeout, `run.sh` SHALL tear down the session resources and exit with an actionable error; it SHALL NOT silently fall back to forwarding the real token into the agent container.
 
 #### Scenario: First use requires no setup
 
 - **GIVEN** a host that has never used the proxy but is authenticated with `gh`
-- **WHEN** user runs `claude-docker --gh ~/repo`
+- **WHEN** user runs `vibe-docker --gh ~/repo`
 - **THEN** the sidecar image is pulled automatically and authenticated GitHub access works with no additional steps
 
 #### Scenario: Sidecar startup failure is fatal, not degraded
 
 - **GIVEN** a host token was found but the sidecar cannot start (e.g. image unavailable)
-- **WHEN** user runs `claude-docker --gh ~/repo`
+- **WHEN** user runs `vibe-docker --gh ~/repo`
 - **THEN** `run.sh` exits non-zero with an error identifying the sidecar failure
 - **AND** the real token is not forwarded into the agent container
 
 ### Requirement: Request filtering policy
 
-The sidecar SHALL enforce request policy before forwarding. The default policy SHALL block repository deletion — `DELETE` requests matching `^/(repos/[^/]+/[^/]+|repositories/[0-9]+)/?$` on `api.github.com`, i.e. both `/repos/{owner}/{repo}` and its numeric-id alias `/repositories/{id}` — with a `403` response whose body identifies the claude-docker proxy policy. All other requests SHALL pass. Users SHALL be able to extend policy by pointing `CLAUDE_DOCKER_GH_POLICY` at a Caddyfile snippet that is imported into the generated sidecar config. Policy configuration SHALL NOT be readable or writable from inside the agent container.
+The sidecar SHALL enforce request policy before forwarding. The default policy SHALL block repository deletion — `DELETE` requests matching `^/(repos/[^/]+/[^/]+|repositories/[0-9]+)/?$` on `api.github.com`, i.e. both `/repos/{owner}/{repo}` and its numeric-id alias `/repositories/{id}` — with a `403` response whose body identifies the vibe-docker proxy policy. All other requests SHALL pass. Users SHALL be able to extend policy by pointing `VIBE_DOCKER_GH_POLICY` at a Caddyfile snippet that is imported into the generated sidecar config. Policy configuration SHALL NOT be readable or writable from inside the agent container.
 
 #### Scenario: Repo deletion is blocked by default
 
 - **WHEN** `gh api -X DELETE /repos/someorg/somerepo` runs inside the agent container
-- **THEN** the response is `403` with a body identifying the claude-docker gh-proxy policy
+- **THEN** the response is `403` with a body identifying the vibe-docker gh-proxy policy
 - **AND** the request never reaches GitHub
 
 #### Scenario: Repo deletion by numeric id is blocked by default
 
 - **WHEN** `gh api -X DELETE /repositories/123456` runs inside the agent container
-- **THEN** the response is `403` with a body identifying the claude-docker gh-proxy policy
+- **THEN** the response is `403` with a body identifying the vibe-docker gh-proxy policy
 - **AND** the request never reaches GitHub
 
 #### Scenario: Non-destructive requests pass
@@ -128,7 +128,7 @@ The sidecar SHALL enforce request policy before forwarding. The default policy S
 
 #### Scenario: User-supplied policy extension is honoured
 
-- **GIVEN** `CLAUDE_DOCKER_GH_POLICY` points to a snippet blocking `DELETE` on `^/repos/[^/]+/[^/]+/git/refs/.*`
+- **GIVEN** `VIBE_DOCKER_GH_POLICY` points to a snippet blocking `DELETE` on `^/repos/[^/]+/[^/]+/git/refs/.*`
 - **WHEN** a matching request is made from the agent container
 - **THEN** it is answered `403` by the sidecar
 
@@ -139,11 +139,11 @@ The sidecar SHALL log every proxied request (method, path, response status) as s
 #### Scenario: API call appears in the audit log
 
 - **WHEN** `gh api /user` runs inside the agent container
-- **THEN** `docker logs claude-gh-proxy-<id>` shows a structured entry with method `GET`, path `/user`, and status `200`
+- **THEN** `docker logs vibe-auth-proxy-<id>` shows a structured entry with method `GET`, path `/user`, and status `200`
 - **AND** no log entry contains the token
 
 #### Scenario: Audit log is discoverable
 
-- **WHEN** a `claude-docker --gh` session starts with an active sidecar
+- **WHEN** a `vibe-docker --gh` session starts with an active sidecar
 - **THEN** `run.sh` prints the sidecar container name before the agent session begins
 - **AND** `$RUNTIME logs <printed name>` succeeds

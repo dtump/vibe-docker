@@ -1,13 +1,20 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+# Project context, shown to AI when creating artifacts.
+context: |
+  Project: vibe-docker, a fork of schubergphilis/claude-docker maintained by Dick Tump.
+  A hardened Docker/podman wrapper that runs Mistral Vibe (PyPI `mistral-vibe`) in a
+  container on the user's machine, with the user's workspaces mounted and host
+  credentials (gh, glab, aws, tfe, az, registries, MISTRAL_API_KEY) reaching it only
+  through explicit opt-in flags.
+  Stack: bash `run.sh` (the `vibe-docker` wrapper) and `entrypoint.sh`, a PowerShell
+  launcher `vibe-docker.ps1`, an Ubuntu-based Dockerfile with version- and hash-pinned
+  tools under `pins/`, a stdlib Python pin refresher, bats/smoke/Python tests, GitHub
+  Actions CI.
+  Conventions: Conventional Commit titles; SPDX headers; long explanatory comments;
+  the privilege drop, capability set and credential opt-in model are load-bearing and
+  no flag may weaken them. Never run tooling on the host: linters, tests and the
+  openspec CLI run in containers.
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

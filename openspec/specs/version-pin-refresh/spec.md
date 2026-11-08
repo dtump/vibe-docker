@@ -6,63 +6,6 @@ Keep the image's pinned tool versions current without hand-editing hashes, and k
 
 ## Requirements
 
-### Requirement: Soak-aware version resolution
-
-The refresh tooling SHALL, for each automated tool, select the highest stable released version whose publish date is older than that tool's soak window. Each automated tool SHALL carry its own default soak window: 1 day for `claude-code`, 7 days for every other automated tool. An operator MAY pass `--soak` to apply a single window to every tool for that run; without it, each tool's default window SHALL apply. The soak gate that verifies committed pins SHALL apply the same per-tool windows. Prerelease versions SHALL be excluded. By default, selection SHALL include major-version increments (e.g. 10.x → 11.x); the tooling SHALL NOT restrict resolution to the currently-pinned major line. An operator MAY pass `--block-major-bumps` to constrain a run to the currently-pinned major; when set and the newest soaked version crosses the major, the tooling SHALL instead select the newest soaked version within the current major and SHALL report the crossed major as blocked. A newer version that exists but falls inside the soak window SHALL NOT be selected; the current pin SHALL be retained instead.
-
-#### Scenario: major version increment is selected and flagged
-
-- **GIVEN** tool X is pinned at 10.33.2 and version 11.5.3 was published 9 days ago with a soak window of 7 days
-- **WHEN** the operator runs the refresh script
-- **THEN** the resolved pin for X is 11.5.3
-- **AND** the report marks the change as a major bump, visually distinct from minor/patch updates
-
-#### Scenario: major bump suppressed under --block-major-bumps
-
-- **GIVEN** tool X is pinned at 10.33.2, version 10.34.1 was published 15 days ago, and version 11.5.3 was published 9 days ago, with a soak window of 7 days
-- **WHEN** the operator runs the refresh script with `--block-major-bumps`
-- **THEN** the resolved pin for X is 10.34.1
-- **AND** the report shows 11.5.3 as available but blocked by `--block-major-bumps`
-
-#### Scenario: newest soaked version selected
-
-- **GIVEN** tool X has versions 1.2.0 (published 20 days ago) and 1.3.0 (published 10 days ago) and the soak window is 7 days
-- **WHEN** the operator runs the refresh script
-- **THEN** the resolved pin for X is 1.3.0
-
-#### Scenario: too-new version held back by the soak
-
-- **GIVEN** tool X is pinned at 1.3.0 and a version 1.4.0 was published 3 days ago with a soak window of 7 days
-- **WHEN** the operator runs the refresh script
-- **THEN** the pin for X remains 1.3.0
-- **AND** the report marks X as `held`, naming the in-soak version and its age
-
-#### Scenario: no newer version available
-
-- **GIVEN** the pinned version is already the newest released version
-- **WHEN** the operator runs the refresh script
-- **THEN** the pin is unchanged and the report shows no update for that tool
-
-#### Scenario: claude-code uses a 1-day window
-
-- **GIVEN** `claude-code` is pinned at 2.1.10 and version 2.1.11 was published 30 hours ago
-- **WHEN** the operator runs the refresh script without `--soak`
-- **THEN** the resolved pin for `claude-code` is 2.1.11
-
-#### Scenario: other tools keep the 7-day window
-
-- **GIVEN** tool X (not `claude-code`) is pinned at 1.3.0 and version 1.4.0 was published 30 hours ago
-- **WHEN** the operator runs the refresh script without `--soak`
-- **THEN** the pin for X remains 1.3.0
-- **AND** the report marks X as `held`, naming 1.4.0 as the in-soak version
-
-#### Scenario: --soak overrides every tool's window
-
-- **GIVEN** `claude-code` is pinned at 2.1.10 and version 2.1.11 was published 3 days ago
-- **WHEN** the operator runs the refresh script with `--soak 7`
-- **THEN** the pin for `claude-code` remains 2.1.10
-- **AND** the report marks 2.1.11 as `held`
-
 ### Requirement: Hashes generated for both architectures
 
 For every binary-download tool (uv, glab, tfenv, aws-cli), the refresh tooling SHALL download the resolved artifact for both `amd64` and `arm64` regardless of the host architecture and record the computed sha256 for each architecture the tool publishes. Alongside each sha256, the tooling SHALL record the resolved download URL the bytes were fetched from, so the recorded hash and the URL it covers stay coupled in the fragment. A tool that fails to provide an expected architecture's artifact SHALL cause the refresh to fail rather than record a partial pin.
@@ -83,7 +26,7 @@ For every binary-download tool (uv, glab, tfenv, aws-cli), the refresh tooling S
 
 ### Requirement: Pins stored as per-tool lockfile fragments
 
-Resolved pins SHALL be written to one version-controlled fragment file per tool (e.g. `pins/<tool>.env`) containing sourceable shell assignments. npm-backed tools (npm itself, claude-code, openspec, pnpm) SHALL record a version only, relying on npm's signed integrity, and so SHALL PyPI-backed tools (`az`, i.e. `azure-cli-core`) in their fragment, whose soak date is the release's first PyPI upload; alongside `pins/az.env` the script SHALL write `pins/az-requirements.txt`, `azure-cli-core` and every transitive dependency hash-locked with `uv pip compile --universal --generate-hashes`; binary-download tools SHALL additionally record, per published architecture, the resolved download URL paired with the sha256 of the bytes at that URL (a single URL+sha for an arch-independent artifact such as tfenv or the `azure-devops` extension wheel). Fragment files SHALL be committed to version control, not fetched at build time.
+Resolved pins SHALL be written to one version-controlled fragment file per tool (e.g. `pins/<tool>.env`) containing sourceable shell assignments. npm-backed tools (npm itself, openspec, pnpm) SHALL record a version only, relying on npm's signed integrity, and so SHALL PyPI-backed tools (`az`, i.e. `azure-cli-core`, and `vibe`, i.e. `mistral-vibe`) in their fragment, whose soak date is the release's first PyPI upload; alongside `pins/az.env` the script SHALL write `pins/az-requirements.txt`, and alongside `pins/vibe.env` it SHALL write `pins/vibe-requirements.txt`, each holding the tool's package and every transitive dependency hash-locked with `uv pip compile --universal --generate-hashes`; binary-download tools SHALL additionally record, per published architecture, the resolved download URL paired with the sha256 of the bytes at that URL (a single URL+sha for an arch-independent artifact such as tfenv or the `azure-devops` extension wheel). Fragment files SHALL be committed to version control, not fetched at build time.
 
 #### Scenario: npm tool fragment carries version only
 
@@ -99,6 +42,11 @@ Resolved pins SHALL be written to one version-controlled fragment file per tool 
 
 - **WHEN** the refresh script writes `pins/az.env` for version V
 - **THEN** it also writes `pins/az-requirements.txt` pinning `azure-cli-core==V` and every transitive dependency, each with a `--hash`
+
+#### Scenario: vibe pin writes its hash lock
+
+- **WHEN** the refresh script writes `pins/vibe.env` for version V
+- **THEN** it also writes `pins/vibe-requirements.txt` pinning `mistral-vibe==V` and every transitive dependency, each with a `--hash`
 
 ### Requirement: Build consumes fragments without hand-authored pins
 
@@ -442,3 +390,57 @@ token, that step SHALL be documented at the point of configuration.
 - **THEN** the proposed change contains no edit to a manual pin
 - **AND** the pull request body carries the manual-pin reminders for an operator
   to act on separately
+
+### Requirement: Soak-gated version resolution
+
+For each automated tool the refresh tooling SHALL select the highest stable (non-prerelease) version published longer ago than the soak window, else keep the current pin. Every tool, `vibe` included, SHALL share one default window of 7 days; `--soak` MAY set a different window for every tool in that run. The soak gate that verifies committed pins SHALL apply the same window.
+
+#### Scenario: newest soaked version selected
+
+- **GIVEN** tool X has versions 1.2.0 (published 20 days ago) and 1.3.0 (published 10 days ago) and the soak window is 7 days
+- **WHEN** the operator runs the refresh script
+- **THEN** the resolved pin for X is 1.3.0
+
+#### Scenario: too-new version held back by the soak
+
+- **GIVEN** tool X is pinned at 1.3.0 and a version 1.4.0 was published 3 days ago with a soak window of 7 days
+- **WHEN** the operator runs the refresh script
+- **THEN** the pin for X remains 1.3.0
+- **AND** the report marks X as `held`, naming the in-soak version and its age
+
+#### Scenario: no newer version available
+
+- **GIVEN** the pinned version is already the newest released version
+- **WHEN** the operator runs the refresh script
+- **THEN** the pin is unchanged and the report shows no update for that tool
+
+#### Scenario: vibe keeps the 7-day window
+
+- **GIVEN** `vibe` is pinned at 3.1.0 and version 3.1.1 was published 30 hours ago
+- **WHEN** the operator runs the refresh script without `--soak`
+- **THEN** the pin for `vibe` remains 3.1.0
+- **AND** the report marks `vibe` as `held`, naming 3.1.1 as the in-soak version
+
+#### Scenario: --soak overrides every tool's window
+
+- **GIVEN** tool X is pinned at 1.3.0 and version 1.4.0 was published 3 days ago
+- **WHEN** the operator runs the refresh script with `--soak 2`
+- **THEN** the resolved pin for X is 1.4.0
+
+### Requirement: Major version bumps are taken unless blocked
+
+By default, selection SHALL include major-version increments (e.g. 10.x → 11.x); the tooling SHALL NOT restrict resolution to the currently-pinned major line. An operator MAY pass `--block-major-bumps` to constrain a run to the currently-pinned major; when set and the newest soaked version crosses the major, the tooling SHALL select the newest soaked version within the current major and SHALL report the crossed major as blocked.
+
+#### Scenario: major version increment is selected and flagged
+
+- **GIVEN** tool X is pinned at 10.33.2 and version 11.5.3 was published 9 days ago with a soak window of 7 days
+- **WHEN** the operator runs the refresh script
+- **THEN** the resolved pin for X is 11.5.3
+- **AND** the report marks the change as a major bump, visually distinct from minor/patch updates
+
+#### Scenario: major bump suppressed under --block-major-bumps
+
+- **GIVEN** tool X is pinned at 10.33.2, version 10.34.1 was published 15 days ago, and version 11.5.3 was published 9 days ago, with a soak window of 7 days
+- **WHEN** the operator runs the refresh script with `--block-major-bumps`
+- **THEN** the resolved pin for X is 10.34.1
+- **AND** the report shows 11.5.3 as available but blocked by `--block-major-bumps`
