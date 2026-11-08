@@ -63,11 +63,25 @@ assert_eq() {
   fi
 }
 
+# True when the mount at exactly $1 carries the `ro` option (field 6 of
+# /proc/self/mountinfo, the per-mount options; the superblock options in the
+# last field say nothing about a read-only bind mount).
+mount_is_ro() {
+  awk -v p="$1" '$5 == p && $6 ~ /(^|,)ro(,|$)/ { found = 1 } END { exit !found }' \
+    /proc/self/mountinfo
+}
+
 # Run a command and assert it fails with a substring matching the read-only
 # filesystem error (uutils coreutils on ubuntu:26.04 emits "Read-only file
 # system"; GNU coreutils emits the same string — match the common substring).
 # Handles both directory paths (creates a sentinel file inside) and file paths
 # (attempts to overwrite the file with tee).
+# A file the session does not own answers "Permission denied" instead: the
+# kernel checks the file's mode before the mount's read-only flag when opening
+# for write, while creating a file in a directory hits the mount flag first.
+# The staged copies are owned by the host user, so a cell whose HOST_UID differs
+# from the runner's (uid 501 in CI) gets EACCES on every file item. That is
+# accepted only when /proc/self/mountinfo shows the mount itself is `ro`.
 assert_write_fails_ro() {
   local label="$1" path="$2"
   local out
@@ -92,6 +106,8 @@ assert_write_fails_ro() {
     else
       if echo "$out" | grep -q "Read-only file system"; then
         pass "$label: write to file blocked with read-only-filesystem error"
+      elif echo "$out" | grep -q "Permission denied" && mount_is_ro "$path"; then
+        pass "$label: write to file blocked by EACCES (not the owner) on a mount listed ro"
       else
         fail "$label: write to file blocked but not by EROFS ('$out')"
       fi
