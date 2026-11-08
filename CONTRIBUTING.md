@@ -60,7 +60,7 @@ CI runs these on every PR; running them locally first is faster:
 
 ```bash
 # Lint shell scripts and the Dockerfile
-shellcheck run.sh entrypoint.sh tests/*/*.sh scripts/*.sh
+shellcheck --severity=warning run.sh entrypoint.sh tests/*/*.sh scripts/*.sh
 hadolint --config .hadolint.yaml Dockerfile
 
 # Unit tests for the pin tooling
