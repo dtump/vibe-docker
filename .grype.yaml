@@ -14,11 +14,19 @@ ignore:
       location: /usr/bin/**
     reason: Vendored code inside prebuilt upstream binaries.
 
-  # AWS CLI v2's bundled interpreter, distinct from the distro python3 deb.
+  # Interpreters grype identifies from the binary rather than from a package:
+  # AWS CLI v2's bundled one, and the uv-managed CPython 3.13 builds under
+  # /opt/az/python and /opt/vibe/python. This rule matches by name and type, so
+  # it covers all three. AWS CLI's moves with pins/awscli.env; the two uv-managed
+  # ones move with pins/uv.env, because a uv release fixes the newest 3.13 patch
+  # it installs. A fixed CPython CVE therefore wants a uv bump, which this rule
+  # does not prompt; Trivy does not report these interpreters at all.
   - package:
       name: python
       type: binary
-    reason: AWS CLI v2's vendored interpreter; moves with pins/awscli.env.
+    reason: >-
+      AWS CLI v2's vendored interpreter (pins/awscli.env) and the uv-managed
+      CPython under /opt/az and /opt/vibe (pins/uv.env).
 
   # GHSA-vfj7-8cjw-p6xm (stack-exhaustion DoS on deeply nested brace patterns)
   # covers every braces release; 3.0.3 is the latest and none is patched. It
