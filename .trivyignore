@@ -1,7 +1,7 @@
-# Accepted vulnerability risk. Read by the Trivy scans in .github/workflows/ci.yml
-# and .github/workflows/image-scan.yml; the contract below is enforced by
-# tests/test_trivyignore.py, not by Trivy, which accepts an entry with no expiry
-# and then suppresses it forever.
+# Accepted vulnerability risk. Read by the Trivy scans in
+# .github/workflows/ci.yml and .github/workflows/image-scan.yml; the contract
+# below is enforced by tests/test_trivyignore.py, not by Trivy, which accepts
+# an entry with no expiry and then suppresses it forever.
 #
 # One finding per line, immediately preceded by a comment giving the reason:
 #
@@ -16,14 +16,14 @@
 # the scans' `severity`, dropping the gate step, or setting its `exit-code` to 0
 # silences every finding at once and is not the same decision as accepting one.
 #
-# Per-ID means the ID is matched ANYWHERE in the image, not scoped to the target
-# it was found in — the plain format has no `paths:` field. Before adding an entry,
-# check no other target carries the same ID where it would be fixable: hiding a
-# bumpable finding is the failure mode this cannot express.
+# Per-ID means the ID is matched ANYWHERE in the image, not scoped to the
+# target it was found in — the plain format has no `paths:` field. Before
+# adding an entry, check no other target carries the same ID where it would be
+# fixable: hiding a bumpable finding is the failure mode this cannot express.
 #
-# If the gate goes red on an ID listed below, suspect a lapsed expiry first. Trivy
-# stops suppressing silently on that date and reports the finding as if it were
-# new, with nothing pointing back at this file.
+# If the gate goes red on an ID listed below, suspect a lapsed expiry first.
+# Trivy stops suppressing silently on that date and reports the finding as if
+# it were new, with nothing pointing back at this file.
 #
 # A deb finding whose fixed version is already in the Ubuntu archive points at
 # the cached apt layer instead: the CI build and the weekly scan reuse it from
@@ -47,3 +47,12 @@ CVE-2026-109383 exp:2026-11-25
 # undici CVE-2026-87018 (DoS via TLS renegotiation with a mismatched
 # certificate). Same fix, copies, expiry and reason as CVE-2026-109383.
 CVE-2026-87018 exp:2026-11-25
+
+# golang.org/x/net CVE-2026-78661 (DoS in x/net/html), vendored at v0.60.0 in
+# the prebuilt gh 2.103.3 (/usr/bin/gh), the latest gh release on 2026-11-08.
+# Fixed upstream in x/net 0.62.0; nothing here can rebuild gh, so this waits
+# for the next gh release. gh floats from cli.github.com's apt repo, so a
+# rebuild after that release picks it up. Only gh carries this ID; .grype.yaml
+# already ignores Go modules under /usr/bin. At expiry, check gh's release and
+# drop this once it vendors x/net 0.62.0 or later.
+CVE-2026-78661 exp:2026-12-06

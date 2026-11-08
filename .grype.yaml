@@ -17,10 +17,11 @@ ignore:
   # Interpreters grype identifies from the binary rather than from a package:
   # AWS CLI v2's bundled one, and the uv-managed CPython 3.13 builds under
   # /opt/az/python and /opt/vibe/python. This rule matches by name and type, so
-  # it covers all three. AWS CLI's moves with pins/awscli.env; the two uv-managed
-  # ones move with pins/uv.env, because a uv release fixes the newest 3.13 patch
-  # it installs. A fixed CPython CVE therefore wants a uv bump, which this rule
-  # does not prompt; Trivy does not report these interpreters at all.
+  # it covers all three. AWS CLI's moves with pins/awscli.env; the two
+  # uv-managed ones move with pins/uv.env, because a uv release fixes the
+  # newest 3.13 patch it installs. A fixed CPython CVE therefore wants a uv
+  # bump, which this rule does not prompt; Trivy does not report these
+  # interpreters at all.
   - package:
       name: python
       type: binary

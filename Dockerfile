@@ -95,6 +95,8 @@ RUN ! dpkg -S /usr/bin/pebble >/dev/null 2>&1 && rm -f /usr/bin/pebble
 # libbrotli1 (curl's brotli) is named for CVE-2026-111497, fixed in
 # 1.2.0-3ubuntu0.1. Same stale-cache pattern: a fresh build gets the fix, CI's
 # gha cache served 1.2.0-3build1. Drop at the next base-image bump.
+# apt and libapt-pkg7.0 are named for CVE-2026-109518, fixed in
+# 3.2.1ubuntu0.1; the base image ships 3.2.0. Drop at the next base-image bump.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl gnupg \
  && install -d -m 0755 /etc/apt/keyrings \
@@ -112,6 +114,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libcurl4t64 \
       libcurl3t64-gnutls \
       libbrotli1 \
+      apt \
+      libapt-pkg7.0 \
       git \
       git-lfs \
       tmux \
