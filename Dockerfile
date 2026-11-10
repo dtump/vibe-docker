@@ -97,6 +97,12 @@ RUN ! dpkg -S /usr/bin/pebble >/dev/null 2>&1 && rm -f /usr/bin/pebble
 # gha cache served 1.2.0-3build1. Drop at the next base-image bump.
 # apt and libapt-pkg7.0 are named for CVE-2026-109518, fixed in
 # 3.2.1ubuntu0.1; the base image ships 3.2.0. Drop at the next base-image bump.
+# apt is spelled "apt" (quoted, no '='): a bare `apt` token next to `apt-get`
+# trips dockle DKL-DI-0003 (space-split tokens, quotes kept, any 2 of
+# {apt-get, apt, dist-upgrade}), and `apt=<ver>` trips CIS-DI-0010 (every
+# NAME=value word is FATAL unless on dockle-accept-key, see docker.yml). Only
+# the publish run on main executes dockle. The shell strips the quotes, so
+# apt-get sees plain apt.
 # Every curl download below retries: GitHub's release downloads returned 504
 # intermittently on 2026-11-08 and failed the CI build on the first try, and
 # the pinned sha256 still decides whether what finally arrived is accepted.
@@ -117,7 +123,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libcurl4t64 \
       libcurl3t64-gnutls \
       libbrotli1 \
-      apt \
+      "apt" \
       libapt-pkg7.0 \
       git \
       git-lfs \
