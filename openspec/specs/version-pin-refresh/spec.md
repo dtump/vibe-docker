@@ -391,9 +391,27 @@ token, that step SHALL be documented at the point of configuration.
 - **AND** the pull request body carries the manual-pin reminders for an operator
   to act on separately
 
-### Requirement: Soak-gated version resolution
+### Requirement: Major version bumps are taken unless blocked
 
-For each automated tool the refresh tooling SHALL select the highest stable (non-prerelease) version published longer ago than the soak window, else keep the current pin. Every tool, `vibe` included, SHALL share one default window of 7 days; `--soak` MAY set a different window for every tool in that run. The soak gate that verifies committed pins SHALL apply the same window.
+By default, selection SHALL include major-version increments (e.g. 10.x → 11.x); the tooling SHALL NOT restrict resolution to the currently-pinned major line. An operator MAY pass `--block-major-bumps` to constrain a run to the currently-pinned major; when set and the newest soaked version crosses the major, the tooling SHALL select the newest soaked version within the current major and SHALL report the crossed major as blocked.
+
+#### Scenario: major version increment is selected and flagged
+
+- **GIVEN** tool X is pinned at 10.33.2 and version 11.5.3 was published 9 days ago with a soak window of 7 days
+- **WHEN** the operator runs the refresh script
+- **THEN** the resolved pin for X is 11.5.3
+- **AND** the report marks the change as a major bump, visually distinct from minor/patch updates
+
+#### Scenario: major bump suppressed under --block-major-bumps
+
+- **GIVEN** tool X is pinned at 10.33.2, version 10.34.1 was published 15 days ago, and version 11.5.3 was published 9 days ago, with a soak window of 7 days
+- **WHEN** the operator runs the refresh script with `--block-major-bumps`
+- **THEN** the resolved pin for X is 10.34.1
+- **AND** the report shows 11.5.3 as available but blocked by `--block-major-bumps`
+
+### Requirement: Per-tool soak-gated version resolution
+
+For each automated tool the refresh tooling SHALL select the highest stable (non-prerelease) version published longer ago than the tool's soak window, else keep the current pin. Each tool SHALL carry its own default window: 1 day for `vibe`, 7 days for all others. `--soak` MAY set one window for every tool in that run; the soak gate that verifies committed pins SHALL apply the same per-tool windows.
 
 #### Scenario: newest soaked version selected
 
@@ -414,33 +432,28 @@ For each automated tool the refresh tooling SHALL select the highest stable (non
 - **WHEN** the operator runs the refresh script
 - **THEN** the pin is unchanged and the report shows no update for that tool
 
-#### Scenario: vibe keeps the 7-day window
+#### Scenario: vibe uses the 1-day window
 
 - **GIVEN** `vibe` is pinned at 3.1.0 and version 3.1.1 was published 30 hours ago
 - **WHEN** the operator runs the refresh script without `--soak`
+- **THEN** the pin for `vibe` resolves to 3.1.1
+
+#### Scenario: vibe holds a release younger than 1 day
+
+- **GIVEN** `vibe` is pinned at 3.1.0 and version 3.1.1 was published 12 hours ago
+- **WHEN** the operator runs the refresh script without `--soak`
 - **THEN** the pin for `vibe` remains 3.1.0
 - **AND** the report marks `vibe` as `held`, naming 3.1.1 as the in-soak version
+
+#### Scenario: other tools keep the 7-day window
+
+- **GIVEN** tool X (not `vibe`) is pinned at 1.3.0 and version 1.4.0 was published 30 hours ago
+- **WHEN** the operator runs the refresh script without `--soak`
+- **THEN** the pin for X remains 1.3.0
+- **AND** the report marks X as `held`, naming 1.4.0 as the in-soak version
 
 #### Scenario: --soak overrides every tool's window
 
 - **GIVEN** tool X is pinned at 1.3.0 and version 1.4.0 was published 3 days ago
 - **WHEN** the operator runs the refresh script with `--soak 2`
 - **THEN** the resolved pin for X is 1.4.0
-
-### Requirement: Major version bumps are taken unless blocked
-
-By default, selection SHALL include major-version increments (e.g. 10.x → 11.x); the tooling SHALL NOT restrict resolution to the currently-pinned major line. An operator MAY pass `--block-major-bumps` to constrain a run to the currently-pinned major; when set and the newest soaked version crosses the major, the tooling SHALL select the newest soaked version within the current major and SHALL report the crossed major as blocked.
-
-#### Scenario: major version increment is selected and flagged
-
-- **GIVEN** tool X is pinned at 10.33.2 and version 11.5.3 was published 9 days ago with a soak window of 7 days
-- **WHEN** the operator runs the refresh script
-- **THEN** the resolved pin for X is 11.5.3
-- **AND** the report marks the change as a major bump, visually distinct from minor/patch updates
-
-#### Scenario: major bump suppressed under --block-major-bumps
-
-- **GIVEN** tool X is pinned at 10.33.2, version 10.34.1 was published 15 days ago, and version 11.5.3 was published 9 days ago, with a soak window of 7 days
-- **WHEN** the operator runs the refresh script with `--block-major-bumps`
-- **THEN** the resolved pin for X is 10.34.1
-- **AND** the report shows 11.5.3 as available but blocked by `--block-major-bumps`

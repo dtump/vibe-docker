@@ -486,12 +486,14 @@ class TestPerToolSoak(unittest.TestCase):
     def _tool(self, name):
         return next(t for t in up.TOOLS if t.name == name)
 
-    def test_every_tool_keeps_the_default(self):
+    def test_every_tool_except_vibe_keeps_the_default(self):
         for t in up.TOOLS:
+            if t.name == "vibe":
+                continue
             self.assertEqual(t.soak_days, up.DEFAULT_SOAK_DAYS, t.name)
 
-    def test_vibe_soaks_the_default_window(self):
-        self.assertEqual(up.soak_days_for(self._tool("vibe"), None), up.DEFAULT_SOAK_DAYS)
+    def test_vibe_soaks_one_day(self):
+        self.assertEqual(up.soak_days_for(self._tool("vibe"), None), 1)
 
     def test_soak_days_for_without_override(self):
         self.assertEqual(up.soak_days_for(self.ONE_DAY, None), 1)
@@ -512,6 +514,25 @@ class TestPerToolSoak(unittest.TestCase):
         soak = timedelta(days=up.soak_days_for(self.ONE_DAY, None))
         r = up.select_version(cand, "2.1.10", soak, now)
         self.assertEqual(r.version, "2.1.11")
+
+    def test_vibe_takes_a_30h_old_release(self):
+        """vibe's own 1-day window lets a 30-hour-old release through; the
+        7-day default would hold it."""
+        now = datetime(2026, 11, 10, tzinfo=timezone.utc)
+        cand = [("3.1.0", (now - timedelta(days=6)).isoformat()),
+                ("3.1.1", (now - timedelta(hours=30)).isoformat())]
+        soak = timedelta(days=up.soak_days_for(self._tool("vibe"), None))
+        r = up.select_version(cand, "3.1.0", soak, now)
+        self.assertEqual(r.version, "3.1.1")
+
+    def test_vibe_holds_a_release_younger_than_its_window(self):
+        now = datetime(2026, 11, 10, tzinfo=timezone.utc)
+        cand = [("3.1.0", (now - timedelta(days=6)).isoformat()),
+                ("3.1.1", (now - timedelta(hours=12)).isoformat())]
+        soak = timedelta(days=up.soak_days_for(self._tool("vibe"), None))
+        r = up.select_version(cand, "3.1.0", soak, now)
+        self.assertEqual(r.version, "3.1.0")
+        self.assertEqual(r.held, "3.1.1")
 
 
 class TestLocks(unittest.TestCase):

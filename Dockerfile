@@ -40,7 +40,7 @@ ARG TASK_VERSION=3.53.1
 # fragment, so `docker build .` is reproducible from the committed lockfile with
 # no --build-arg. Refresh them with uv run scripts/update_pins.py (see
 # docs/maintenance.md): it selects the newest stable version already past its
-# soak window (7 days) and recomputes the hashes. The
+# soak window (per-tool: 7 days, vibe 1 day) and recomputes the hashes. The
 # soak policy that used to be hand-applied here now lives in that script. To
 # override a single tool: uv run scripts/update_pins.py --pin <tool>=<version>.
 

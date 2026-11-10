@@ -8,7 +8,8 @@
 """Regenerate the version/sha256 pins under pins/.
 
 For each automated tool this selects the highest STABLE version that is already
-older than its soak window (7 days), downloads the artifact(s) for BOTH
+older than its soak window (per-tool: 7 days by default, 1 day for vibe), downloads
+the artifact(s) for BOTH
 amd64 and arm64, computes the sha256(s), and writes pins/<tool>.env. Selecting a
 version that has already survived the soak window bakes the supply-chain soak
 into the *selection* — the resulting image is safe to use the moment it is built
@@ -142,8 +143,12 @@ TOOLS = [
     #   vibe 3.1.0
     # The `vibe ` prefix is part of the assertion, so a bare version printed by
     # something else answering to `vibe` does not pass.
+    # 1-day soak instead of the 7-day default: vibe ships almost daily, and a
+    # broken or malicious release is noticed and pulled within a day at this
+    # install volume — the same window claude-docker used for Claude Code
+    # (openspec/changes/archive/2026-09-25-claude-code-24h-soak).
     Tool("vibe", "pypi", "mistral-vibe",
-         "vibe --version", r"^vibe ([^ ]+)$"),
+         "vibe --version", r"^vibe ([^ ]+)$", soak_days=1),
 ]
 
 
@@ -853,7 +858,7 @@ def parse_args(argv):
     )
     p.add_argument("--soak", type=int, default=None, metavar="DAYS",
                    help="soak window in days for every tool (default: each tool's own"
-                        f" window, {DEFAULT_SOAK_DAYS} for every tool today)")
+                        f" window, {DEFAULT_SOAK_DAYS} days unless the tool sets its own)")
     p.add_argument("--block-major-bumps", action="store_true",
                    help="stay within each tool's current major version")
     p.add_argument("--pin", action="append", default=[], metavar="TOOL=VERSION",
