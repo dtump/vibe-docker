@@ -1,0 +1,6 @@
+- [x] 1.1 Set `soak_days=1` on the `vibe` `Tool` in `scripts/update_pins.py`, with the rationale in a comment
+- [x] 1.2 Update the module docstring and `--soak` help text to describe per-tool windows
+- [x] 1.3 Update `tests/test_update_pins.py`: `vibe` defaults to 1 day, all other tools to `DEFAULT_SOAK_DAYS`; a 30h-old release is selected under vibe's window, a younger one held
+- [x] 1.4 Update `docs/maintenance.md` and the `Dockerfile` comment
+- [x] 1.5 Regenerate `pins/` with the new window (vibe stays at 3.1.0, 3.1.1 held)
+- [x] 1.6 Spec delta for `version-pin-refresh` (soak-gated resolution) in this change
