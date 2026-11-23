@@ -228,10 +228,12 @@ RUN . /tmp/uv.env; set -e; ARCH=$(uname -m); \
 # MANUAL pin, like NODE_VERSION above and NOT a pins/ fragment: go.dev's release
 # JSON carries no publish dates, so update_pins.py cannot evaluate its soak
 # window for Go — it only reminds the operator to look. 1.26.10 was pinned on
-# 2026-10-22, INSIDE the 7-day soak, on purpose: it fixes a stdlib CVE
-# (CVE-2026-111943 crypto/x509) that fails the Trivy gate, and .trivyignore
-# must not hide a finding a bump can fix. Both hashes were checked against
-# locally downloaded tarballs. The next bump goes back to the normal soak.
+# 2026-10-22, INSIDE the 7-day soak, on purpose: it fixed a stdlib CVE
+# (CVE-2026-111943 crypto/x509) that failed the Trivy gate, and .trivyignore
+# must not hide a finding a bump can fix. 1.27.4 was pinned on 2026-11-23 for
+# the same reason: latest stable, fixing the go stdlib CVEs (CVE-2026-97033
+# through CVE-2026-97043) the grype gate flags at 1.26.10. Both hashes were
+# checked against locally downloaded tarballs.
 # Bump with (version + both hashes in one shot):
 #   curl -fsSL 'https://go.dev/dl/?mode=json' | jq -r '.[] | select(.stable) |
 #     .version, (.files[] | select(.os=="linux" and .kind=="archive" and
@@ -244,9 +246,9 @@ RUN . /tmp/uv.env; set -e; ARCH=$(uname -m); \
 # api/ (the stdlib API compatibility lists for Go's own release checks), test/
 # (the compiler's regression suite) and every src/**/testdata are only read by
 # tests of Go itself, never by building or testing user code, so they go.
-ARG GO_VERSION=1.26.10
-ARG GO_SHA256_AMD64=ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5
-ARG GO_SHA256_ARM64=3f4227ce7b206a513e794f1393adb473a07b46e94d18bd15d1c684bbb7319797
+ARG GO_VERSION=1.27.4
+ARG GO_SHA256_AMD64=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
+ARG GO_SHA256_ARM64=3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92
 RUN ARCH=$(dpkg --print-architecture); \
     case "$ARCH" in \
       amd64) SHA="${GO_SHA256_AMD64}" ;; \
